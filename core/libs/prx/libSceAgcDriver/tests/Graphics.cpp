@@ -4949,7 +4949,7 @@ std::string interlockShape(std::span<const std::uint32_t> words) {
     return shape;
 }
 
-std::string interlockExits(std::span<const std::uint32_t> words, std::size_t& kills) {
+std::string interlockExits(std::span<const std::uint32_t> words, std::size_t& kills, std::size_t& terminates) {
     struct Block {
         std::vector<spv::Op> ops;
         std::vector<std::uint32_t> next;
@@ -4967,7 +4967,7 @@ std::string interlockExits(std::span<const std::uint32_t> words, std::size_t& ki
         if (op == spv::OpLabel) label = words[at + 1];
         if (op == spv::OpLabel && function == entry && first == 0) first = label;
         if (function != entry) {
-            if (op == spv::OpBeginInvocationInterlockEXT || op == spv::OpEndInvocationInterlockEXT || op == spv::OpKill) return "an interlock instruction or OpKill outside the entry point";
+            if (op == spv::OpBeginInvocationInterlockEXT || op == spv::OpEndInvocationInterlockEXT || op == spv::OpKill || op == spv::OpTerminateInvocation) return "an interlock instruction, OpKill or OpTerminateInvocation outside the entry point";
             continue;
         }
         if (label == 0) continue;
@@ -4991,6 +4991,7 @@ std::string interlockExits(std::span<const std::uint32_t> words, std::size_t& ki
             if (op == spv::OpEndInvocationInterlockEXT && stage++ != 1) return "block " + std::to_string(current) + " ends the interlock outside it";
             if ((op == spv::OpKill || op == spv::OpReturn || op == spv::OpReturnValue || op == spv::OpUnreachable || op == spv::OpTerminateInvocation) && stage != 2) return "an exit in block " + std::to_string(current) + " skips OpEndInvocationInterlockEXT";
             if (op == spv::OpKill) ++kills;
+            if (op == spv::OpTerminateInvocation) ++terminates;
         }
         for (const auto next : blocks[current].next) {
             const auto [known, added] = state.emplace(next, stage);
@@ -5039,9 +5040,21 @@ void orderedPixelShaderTests() {
     auto faulting = orderedPixelRequest(0x30600u, bdaInterlock, OrderedBdaPixelCode);
     faulting.target.supportedExtensions = bdaExtensions;
     faulting.target.bdaAbiVersion = ShaderRecompiler::BdaAbi::Version;
-    std::size_t kills = 0;
-    const auto exits = interlockExits(ShaderRecompiler::Recompile(faulting).spirv.Words(), kills);
-    Require(exits.empty() && kills == 6u, "a primitive-ordered pixel shader with BDA reads: " + (exits.empty() ? std::to_string(kills) + " OpKill, not the valid-mask kill and 5 BDA fault kills" : exits));
+    std::size_t kills = 0, terminates = 0;
+    const auto exits = interlockExits(ShaderRecompiler::Recompile(faulting).spirv.Words(), kills, terminates);
+    Require(exits.empty() && kills == 6u && terminates == 0u, "a primitive-ordered pixel shader with BDA reads: " + (exits.empty() ? std::to_string(kills) + " OpKill and " + std::to_string(terminates) + " OpTerminateInvocation, not the valid-mask kill and 5 BDA fault kills" : exits));
+    const std::array<std::string_view, 3> terminateExtensions{"SPV_KHR_physical_storage_buffer", "SPV_KHR_8bit_storage", "SPV_KHR_terminate_invocation"};
+    auto terminating = faulting;
+    terminating.target.supportedExtensions = terminateExtensions;
+    const auto terminated = ShaderRecompiler::Recompile(terminating).spirv.Words();
+    std::size_t terminatedKills = 0, terminatedStops = 0;
+    const auto terminatedExits = interlockExits(terminated, terminatedKills, terminatedStops);
+    Require(terminatedExits.empty() && terminatedKills == 1u && terminatedStops == 5u, "a primitive-ordered pixel shader with BDA reads and SPV_KHR_terminate_invocation: " + (terminatedExits.empty() ? std::to_string(terminatedKills) + " OpKill and " + std::to_string(terminatedStops) + " OpTerminateInvocation, not the valid-mask kill and 5 BDA fault terminations" : terminatedExits));
+    std::size_t terminateDeclarations = 0;
+    for (std::size_t at = 5; at < terminated.size() && (terminated[at] >> 16u) != 0; at += terminated[at] >> 16u) {
+        if ((terminated[at] & 0xffffu) == spv::OpExtension && std::string_view(reinterpret_cast<const char*>(&terminated[at + 1])) == "SPV_KHR_terminate_invocation") ++terminateDeclarations;
+    }
+    Require(terminateDeclarations == 1u, "the module declared SPV_KHR_terminate_invocation " + std::to_string(terminateDeclarations) + " times");
     expectFailure([&] { static_cast<void>(ShaderRecompiler::Recompile(orderedPixelRequest(0x30600u, plain))); }, "fragmentShaderPixelInterlock");
 }
 
