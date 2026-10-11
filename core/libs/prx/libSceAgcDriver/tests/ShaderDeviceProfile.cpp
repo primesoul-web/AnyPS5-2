@@ -99,6 +99,7 @@ void CheckProfile() {
     invalid([](auto& value) { value.capabilities.push_back(spv::CapabilityStorageImageMultisample); }, "shaderStorageImageMultisample");
     invalid([](auto& value) { value.capabilities.push_back(spv::CapabilityFragmentBarycentricKHR); }, "fragmentShaderBarycentric");
     invalid([](auto& value) { value.capabilities.push_back(spv::CapabilityMeshShadingEXT); }, "meshShader");
+    invalid([](auto& value) { value.extensions.push_back("SPV_KHR_terminate_invocation"); }, "shaderTerminateInvocation");
     ProfileInput enabled;
     enabled.capabilities.push_back(spv::CapabilitySampledImageArrayDynamicIndexing);
     enabled.capabilities.push_back(spv::CapabilityStorageImageArrayNonUniformIndexing);
