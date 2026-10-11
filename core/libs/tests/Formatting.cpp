@@ -186,6 +186,16 @@ __attribute__((noinline)) static void APS5_VABI RunChecks() {
         address(0x1a), 6, address(0xf), -6, address(0xf)) == 34 &&
         std::strcmp(pointers, "[0x1a][0x1a][0x1a][   0xf][0xf   ]") == 0);
     Require(snprintf_nid_postfix(pointers, 6, "%p", address(0xabcdef)) == 8 && std::strcmp(pointers, "0xabc") == 0);
+    char freebsd[64];
+    Require(snprintf_nid_postfix(freebsd, sizeof(freebsd), "%qd|%qu|%qx|%qo", -5000000000LL, 5000000000ULL, 255ULL, 8ULL) == 28 &&
+        std::strcmp(freebsd, "-5000000000|5000000000|ff|10") == 0);
+    Require(snprintf_nid_postfix(freebsd, sizeof(freebsd), "%D|%hD|%O|%U|%jD", -5000000000L, 5000000000L, 8L, 5000000000UL, -6000000000LL) == 48 &&
+        std::strcmp(freebsd, "-5000000000|5000000000|10|5000000000|-6000000000") == 0);
+    Require(snprintf_nid_postfix(freebsd, sizeof(freebsd), "[%5%][%-5%][%y][%5y][%-3y]") == 29 &&
+        std::strcmp(freebsd, "[    %][%    ][y][    y][y  ]") == 0);
+    Require(snprintf_nid_postfix(freebsd, sizeof(freebsd), "100%") == 3 && std::strcmp(freebsd, "100") == 0);
+    Require(snprintf_nid_postfix(freebsd, sizeof(freebsd), "%d done 5% ", 7) == 8 && std::strcmp(freebsd, "7 done 5") == 0);
+    Require(snprintf_nid_postfix(freebsd, 4, "ab%dcd%", 12) == 6 && std::strcmp(freebsd, "ab1") == 0);
 #endif
     snprintf_nid_postfix(buffer, sizeof(buffer), "%.*s", -1, "unlimited");
     Require(std::strcmp(buffer, "unlimited") == 0);
