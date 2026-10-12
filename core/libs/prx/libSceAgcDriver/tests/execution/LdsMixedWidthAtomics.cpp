@@ -192,7 +192,7 @@ std::uint64_t WorkgroupBytes(std::span<const std::uint32_t> words) {
     std::vector<std::uint32_t> pointers;
     for (std::size_t at = 5; at < words.size();) {
         const auto count = words[at] >> 16u;
-        Require(count != 0u && count <= words.size() - at, "lds sentinel budget: malformed SPIR-V");
+        Require(count != 0u && count <= words.size() - at, "lds lock budget: malformed SPIR-V");
         const auto instruction = words.subspan(at, count);
         const auto opcode = instruction[0] & 0xffffu;
         if (opcode == spv::OpTypeInt || opcode == spv::OpTypeArray || opcode == spv::OpTypePointer) types[instruction[1]] = instruction;
@@ -203,11 +203,11 @@ std::uint64_t WorkgroupBytes(std::span<const std::uint32_t> words) {
     std::uint64_t total = 0;
     for (const auto pointer : pointers) {
         const auto definition = types.at(pointer);
-        Require((definition[0] & 0xffffu) == spv::OpTypePointer, "lds sentinel budget: Workgroup storage has no pointer type");
+        Require((definition[0] & 0xffffu) == spv::OpTypePointer, "lds lock budget: Workgroup storage has no pointer type");
         const auto array = types.at(definition[3]);
-        Require((array[0] & 0xffffu) == spv::OpTypeArray, "lds sentinel budget: unexpected Workgroup allocation shape");
+        Require((array[0] & 0xffffu) == spv::OpTypeArray, "lds lock budget: unexpected Workgroup allocation shape");
         const auto element = types.at(array[2]);
-        Require((element[0] & 0xffffu) == spv::OpTypeInt && element[2] == 32u, "lds sentinel budget: Workgroup array is not dwords");
+        Require((element[0] & 0xffffu) == spv::OpTypeInt && element[2] == 32u, "lds lock budget: Workgroup array is not dwords");
         total += static_cast<std::uint64_t>(constants.at(array[3])) * sizeof(std::uint32_t);
     }
     return total;
@@ -232,10 +232,10 @@ void Run(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> code, c
     if (expectedDeviceDwords) {
         const auto bytes = WorkgroupBytes(result.spirv.Words());
         const auto limit = request.target.maxWorkgroupSharedMemoryBytes;
-        Require(bytes <= limit, "lds sentinel budget: guest LDS, lock and sentinel exceed the device limit before dispatch");
-        Require(result.workgroupMemoryDwords == *expectedDeviceDwords, "lds sentinel budget: unexpected device-backed LDS allocation before dispatch");
-        if (*expectedDeviceDwords == 0u) Require(bytes == limit, "lds sentinel budget: exact-fit case did not retain its lock and sentinel");
-        std::printf("lds sentinel budget: %s declarations verified; guest=%u; workgroup=%llu; device=%u\n", name, ldsDwords * 4u, static_cast<unsigned long long>(bytes), result.workgroupMemoryDwords);
+        Require(bytes <= limit, "lds lock budget: guest LDS and lock exceed the device limit before dispatch");
+        Require(result.workgroupMemoryDwords == *expectedDeviceDwords, "lds lock budget: unexpected device-backed LDS allocation before dispatch");
+        if (*expectedDeviceDwords == 0u) Require(bytes == limit, "lds lock budget: exact-fit case did not retain its lock");
+        std::printf("lds lock budget: %s declarations verified; guest=%u; workgroup=%llu; device=%u\n", name, ldsDwords * 4u, static_cast<unsigned long long>(bytes), result.workgroupMemoryDwords);
     }
     for (std::uint32_t run = 0; run < repeats; ++run) {
         Output.fill(0xdeadbeefu);
@@ -243,19 +243,19 @@ void Run(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> code, c
         device.WaitIdle();
         Check(name, operations, run);
     }
-    if (expectedDeviceDwords) std::printf("lds sentinel budget: %s GPU readback verified across 256 lanes\n", name);
+    if (expectedDeviceDwords) std::printf("lds lock budget: %s GPU readback verified across 256 lanes\n", name);
 }
 
-void SentinelBudget(AgcDriver::VulkanDevice& device) {
+void LockBudget(AgcDriver::VulkanDevice& device) {
     const auto target = device.Target();
     const auto limit = target.maxWorkgroupSharedMemoryBytes;
-    std::printf("lds sentinel budget: robustBufferAccess2=%u; maxWorkgroupSharedMemoryBytes=%u\n", static_cast<unsigned>(target.robustBufferAccess2), limit);
-    if (std::getenv("ANYPS5_REQUIRE_ROBUST2") != nullptr) Require(target.robustBufferAccess2, "lds sentinel budget: robustBufferAccess2 was not enabled");
-    Require(limit >= 32u && limit % 4u == 0u, "lds sentinel budget: unexpected device shared-memory limit");
+    std::printf("lds lock budget: robustBufferAccess2=%u; maxWorkgroupSharedMemoryBytes=%u\n", static_cast<unsigned>(target.robustBufferAccess2), limit);
+    if (std::getenv("ANYPS5_REQUIRE_ROBUST2") != nullptr) Require(target.robustBufferAccess2, "lds lock budget: robustBufferAccess2 was not enabled");
+    Require(limit >= 32u && limit % 4u == 0u, "lds lock budget: unexpected device shared-memory limit");
     const auto operations = static_cast<std::uint64_t>(Threads) * Iterations;
-    Run(device, UniformCode, "limit-4", operations, 1, (limit - 4u) / 4u, (limit - 4u) / 4u + 1u);
-    Run(device, UniformCode, "limit-8", operations, 1, (limit - 8u) / 4u, 0u);
-    std::puts("lds sentinel budget tests passed");
+    Run(device, UniformCode, "limit", operations, 1, limit / 4u, limit / 4u + 1u);
+    Run(device, UniformCode, "limit-4", operations, 1, (limit - 4u) / 4u, 0u);
+    std::puts("lds lock budget tests passed");
 }
 
 }
@@ -264,8 +264,8 @@ int main(int argc, char** argv) {
     try {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
-        if (argc == 2 && std::string_view(argv[1]) == "--sentinel-budget") {
-            SentinelBudget(*device);
+        if (argc == 2 && std::string_view(argv[1]) == "--lock-budget") {
+            LockBudget(*device);
             return 0;
         }
         Require(argc == 1, "lds mixed width atomics: unexpected argument");

@@ -88,8 +88,8 @@ void verify(std::uint32_t waveSize, std::uint32_t limit) {
     require(!result.spirv.empty(), "LDS atomic program did not compile");
     const auto declared = workgroupBytes(result.spirv.Words());
     require(declared <= limit, "declared " + std::to_string(declared) + " Workgroup bytes exceeds limit " + std::to_string(limit));
-    require(result.workgroupMemoryDwords == (limit < 72u ? 17u : 0u), "incorrect device-memory LDS stride at limit " + std::to_string(limit));
-    if (limit >= 72u) require(declared != 0u, "in-budget LDS unexpectedly lost its Workgroup allocation");
+    require(result.workgroupMemoryDwords == (limit < 68u ? 17u : 0u), "incorrect device-memory LDS stride at limit " + std::to_string(limit));
+    if (limit >= 68u) require(declared != 0u, "in-budget LDS unexpectedly lost its Workgroup allocation");
 }
 
 }
@@ -101,15 +101,15 @@ int main() {
             const auto name = "wave" + std::to_string(waveSize) + " limit" + std::to_string(limit);
             try {
                 verify(waveSize, limit);
-                std::cout << "LDS sentinel budget: " << name << " passed\n";
+                std::cout << "LDS lock budget: " << name << " passed\n";
             } catch (const std::exception& error) {
                 ++failures;
                 const std::string message(error.what());
-                std::cerr << "LDS sentinel budget: " << name << ": " << message.substr(0, message.find("RecompileRequest:")) << '\n';
+                std::cerr << "LDS lock budget: " << name << ": " << message.substr(0, message.find("RecompileRequest:")) << '\n';
             }
         }
     }
     if (failures != 0) return 1;
-    std::cout << "LDS sentinel budget tests passed\n";
+    std::cout << "LDS lock budget tests passed\n";
     return 0;
 }

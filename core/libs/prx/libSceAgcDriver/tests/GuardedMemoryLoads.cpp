@@ -294,19 +294,14 @@ void expectReads(const LoadCase& test, bool robust, bool active, std::uint32_t o
 
 void ldsLoads(IrOpcode opcode, IrType type, std::uint32_t bits, std::uint32_t components) {
     const LoadCase test{ResourceKind::Lds, opcode, type, bits, components};
-    const auto length = ldsLength(emitLoad(test, true, 8, 64, false));
-    const auto sentinel = length - 1u;
-    require(sentinel >= 16u, "LDS fixture is smaller than its probes");
+    require(ldsLength(emitLoad(test, true, 8, 64, false)) == 16u, "LDS array declares more than the program's dwords");
     for (const bool robust : {false, true}) {
-        std::vector<std::uint32_t> sentinels(components, sentinel);
-        expectReads(test, robust, false, 8, sentinels);
-        expectReads(test, robust, true, (sentinel + 5u) * 4u, sentinels);
+        expectReads(test, robust, false, 8, {});
+        expectReads(test, robust, true, 84, {});
         std::vector<std::uint32_t> indices;
         for (std::uint32_t index = 0; index < components; ++index) indices.push_back(2 + index);
         expectReads(test, robust, true, 8, indices);
-        std::vector<std::uint32_t> edge{15};
-        edge.insert(edge.end(), components - 1u, sentinel);
-        expectReads(test, robust, true, 60, edge);
+        expectReads(test, robust, true, 60, {15});
     }
 }
 
@@ -323,12 +318,12 @@ int main() {
             std::cout << "guarded memory loads: " << name << ": " << error.what() << '\n';
         }
     };
-    run("LDS word reads its sentinel", [] { ldsLoads(IrOpcode::LoadSharedU32, IrType::U32, 32, 1); });
-    run("LDS subword reads its sentinel", [] {
+    run("LDS word keeps its branch", [] { ldsLoads(IrOpcode::LoadSharedU32, IrType::U32, 32, 1); });
+    run("LDS subword keeps its branch", [] {
         ldsLoads(IrOpcode::LoadSharedU8, IrType::U8, 8, 1);
         ldsLoads(IrOpcode::LoadSharedU16, IrType::U16, 16, 1);
     });
-    run("LDS wide reads its sentinel", [] { ldsLoads(IrOpcode::LoadSharedU32x4, IrType::U32x4, 32, 4); });
+    run("LDS wide keeps its branch", [] { ldsLoads(IrOpcode::LoadSharedU32x4, IrType::U32x4, 32, 4); });
     run("GDS word", [] {
         const LoadCase test{ResourceKind::Gds, IrOpcode::LoadSharedU32, IrType::U32, 32, 1};
         expectReads(test, false, false, 8, {});
