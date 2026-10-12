@@ -2,6 +2,8 @@
 
 ### Functional
 
+- [Executable guest imports](../../../core/relinker/relinker/src/guest/GuestModuleBuilder.cpp) - on Linux and macOS, a relocated executable import resolved to one guest provider requires that module and its dependencies at startup, even when it was discovered through `--module-dir` without a DT_NEEDED entry. Unreferenced symbols and no-op relocations do not require an otherwise deferred module. Console module-start ordering is unmeasured.
+
 - [Runtime-loaded modules](../../../core/relinker/relinker/src/guest/GuestModuleBuilder.cpp) (`--module-dir`) that another module needs are initialized at startup with no start arguments, before the module that needs them is loaded; the console is assumed to start them when that module is loaded.
 - The executable file that [relinker](../../../core/relinker/elfpatcher/src/windows/WindowsPeWriter.cpp) generates opens the console when launched, which is inconvenient for playability.
 - [SDK memory-management syscall traps](../../../core/relinker/relinker/src/analysis/SyscallScanner.cpp) under `--trap-sdk-syscall-stubs` recognize three exact instruction sequences from [ps5-payload-dev SDK libc/mman.c](https://github.com/ps5-payload-dev/sdk/blob/12cf3dda40/libc/mman.c), observed in Nuvio Maxd 0.5.15 (PPSA99288): syscall 74 and the two syscall 477 paths, with their argument preparation and carry-flag error handling. Matching requires a decoded instruction boundary and the complete sequence inside the scanned code range. Other SDK/compiler output remains rejected. The matched syscall becomes `UD2`; this does not implement mmap or mprotect and a call still faults.
