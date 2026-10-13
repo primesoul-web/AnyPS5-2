@@ -30,6 +30,7 @@ struct Ngs2Piece {
     const std::uint8_t* data;
     std::uint64_t firstFrame;
     std::uint64_t frames;
+    std::vector<std::uint8_t> pcm;
 };
 
 struct Ngs2Block {
@@ -42,6 +43,7 @@ struct Ngs2Block {
     std::uint64_t availableFrames = 0;
     std::vector<Ngs2Piece> pieces;
     bool started = false;
+    std::vector<std::uint8_t> pcm;
 };
 
 struct Ngs2Atrac9DecoderDeleter {

@@ -6,6 +6,7 @@
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "prx/libc/include/General.hpp"
 #include "Ngs2Internal.hpp"
@@ -193,7 +194,9 @@ static void AppendStreamData(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlo
         if (block.data_size % frameBytes != 0 || block.num_skip_samples != 0 || block.num_repeats != 0) {
             throw std::runtime_error("NGS2: appending a waveform block with skipped samples, repeats or a partial frame is not implemented");
         }
-        stream.pieces.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, stream.availableFrames, block.data_size / frameBytes});
+        Ngs2Piece piece{static_cast<const std::uint8_t*>(param.data) + block.data_offset, stream.availableFrames, block.data_size / frameBytes};
+        piece.pcm.assign(piece.data, piece.data + block.data_size);
+        stream.pieces.push_back(std::move(piece));
         stream.availableFrames += block.data_size / frameBytes;
     }
 }
@@ -235,13 +238,18 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
         if (block.num_samples == 0 || (bytes > block.data_size && !streaming && !compressedStream)) {
             throw std::invalid_argument("NGS2: waveform block " + std::to_string(i) + " does not fit its data");
         }
-        voice.blocks.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, block});
+        Ngs2Block queued{static_cast<const std::uint8_t*>(param.data) + block.data_offset, block};
         if (streaming) {
-            auto& stream = voice.blocks.back();
-            stream.streaming = true;
-            stream.availableFrames = block.data_size / frameBytes;
-            stream.pieces.push_back({stream.data, 0, stream.availableFrames});
+            queued.streaming = true;
+            queued.availableFrames = block.data_size / frameBytes;
+            Ngs2Piece piece{queued.data, 0, queued.availableFrames};
+            piece.pcm.assign(piece.data, piece.data + block.data_size);
+            queued.pieces.push_back(std::move(piece));
+        } else if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L) {
+            const auto* first = queued.data + static_cast<std::size_t>(block.num_skip_samples) * frameBytes;
+            queued.pcm.assign(first, first + static_cast<std::size_t>(block.num_samples) * frameBytes);
         }
+        voice.blocks.push_back(std::move(queued));
     }
 }
 

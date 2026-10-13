@@ -1,6 +1,7 @@
 #include "Ngs2Test.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -149,6 +150,66 @@ static void TestPcmBlockEnd() {
 
 static bool Near(float a, float b) {
     return std::fabs(a - b) < 1e-4f;
+}
+
+static void TestPcmBufferRecycling() {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto sampler = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 44100, 0, 0, 0}});
+    Patch(sampler, master);
+    std::array<std::array<std::int16_t, 16>, 4> ring{};
+    std::uint32_t generated = 0;
+    const auto sample = [](std::uint32_t frame) { return static_cast<std::int16_t>(1000 + frame * 32); };
+    const auto refill = [&](std::size_t index, std::uint32_t frames) {
+        for (std::uint32_t frame = 0; frame < frames; ++frame) ring[index][frame] = sample(generated++);
+        const Ngs2WaveformBlock block{0, frames * sizeof(std::int16_t), 0, 0, frames, 0, 0};
+        Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, ring[index].data(), SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE, 1, &block});
+    };
+    for (std::size_t i = 0; i < ring.size(); ++i) refill(i, ring[i].size());
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    double position = 0;
+    std::uint64_t consumed = 0;
+    std::size_t next = 0;
+    for (int render = 0; render < 40; ++render) {
+        std::array<float, Grain> output{};
+        const Ngs2RenderBufferInfo info{output.data(), sizeof(output), SCE_NGS2_WAVEFORM_TYPE_PCM_F32L, 1};
+        Require(sceNgs2SystemRender(system, &info, 1) == SCE_NGS2_OK);
+        for (const auto value : output) {
+            const auto frame = static_cast<std::uint32_t>(position);
+            const auto expected = std::lerp(static_cast<float>(sample(frame)), static_cast<float>(sample(frame + 1)), static_cast<float>(position - frame)) / 32768.0f;
+            Require(Near(value, expected));
+            position += 44100.0 / 48000.0;
+        }
+        Ngs2SamplerVoiceState state{};
+        Require(sceNgs2VoiceGetState(sampler, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
+        Require(state.decoded_data_size == state.num_decoded_samples * sizeof(std::int16_t));
+        const auto frames = (state.decoded_data_size - consumed) / sizeof(std::int16_t);
+        Require(frames != 0 && frames <= ring[next].size());
+        refill(next, static_cast<std::uint32_t>(frames));
+        next = (next + 1) % ring.size();
+        consumed = state.decoded_data_size;
+    }
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
+static void TestPcmRetentionWithSkipAndRepeat() {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto sampler = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP, Ngs2SamplerVoiceSetupParam{{}, {SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 1, 48000, 0, 0, 0}});
+    Patch(sampler, master);
+    std::array<std::int16_t, 4> pcm{-111, 1000, 2000, 3000};
+    const Ngs2WaveformBlock block{0, sizeof(pcm), 1, 1, 3, 0, 0};
+    Control(sampler, SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS, Ngs2SamplerVoiceWaveformBlocksParam{{}, pcm.data(), 0, 1, &block});
+    pcm.fill(-222);
+    Event(sampler, SCE_NGS2_VOICE_EVENT_PLAY);
+    const auto out = RenderI16(system);
+    for (std::uint32_t i = 0; i < Grain; ++i) Require(out[i] == (i < 6 ? 1000 * (i % 3 + 1) : 0));
+    Ngs2SamplerVoiceState state{};
+    Require(sceNgs2VoiceGetState(sampler, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
+    Require(state.num_decoded_samples == 6 && state.decoded_data_size == 12 && state.waveform_data == pcm.data() + pcm.size());
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
 static bool PanThrows(Ngs2PanWork* work, const Ngs2PanParam* params, std::uint32_t numParams, std::uint32_t format) {
@@ -886,6 +947,8 @@ static void RenderAfterStaticTeardown() {
 int main() {
     Require(std::atexit(RenderAfterStaticTeardown) == 0);
     TestErrorsAndInfo();
+    TestPcmBufferRecycling();
+    TestPcmRetentionWithSkipAndRepeat();
     TestPcmBlockEnd();
     TestPan();
     TestPitchAndRepeat();
