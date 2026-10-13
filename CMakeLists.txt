@@ -56,6 +56,10 @@ if(BUILD_TESTING)
     add_test(NAME shader_cache_file_read COMMAND shader_cache_file_read_tests)
     set_tests_properties(shader_cache_file_read PROPERTIES TIMEOUT 20)
     find_package(Python3 QUIET COMPONENTS Interpreter)
+    add_test_executable(pad_command_file_tests core/libs/prx/libScePad/tests/InputCommandFile.cpp)
+    target_include_directories(pad_command_file_tests PRIVATE core/libs)
+    add_test(NAME pad_command_file COMMAND pad_command_file_tests)
+    set_tests_properties(pad_command_file PROPERTIES TIMEOUT 20)
     if(Python3_Interpreter_FOUND)
         add_test(NAME pr_overlap_encoding COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_pr_overlap_encoding.py)
@@ -100,6 +104,9 @@ if(BUILD_TESTING)
         add_test(NAME pad_input COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_pad_input.py)
         set_tests_properties(pad_input PROPERTIES TIMEOUT 20)
+        add_test(NAME pad_timeline COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_pad_timeline.py)
+        set_tests_properties(pad_timeline PROPERTIES TIMEOUT 20)
         add_test(NAME trace_digest COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_trace_digest.py)
     endif()
