@@ -2,6 +2,7 @@
 
 ### Build
 
+- [sceKernelVirtualQuery](../../../core/libs/prx/libkernel/DirectMemory/Export.cpp) returns [VirtualQueryInfo](../../../core/libs/SceTypes.hpp) with a one-byte flag allocation unit so Windows and SysV hosts return the same 72-byte representation, with the name at byte 33 and GPU mask at byte 65. This preserves the existing SysV representation; the console offsets beyond the address, protection and size fields observed in Astro Bot's AGC calls are not hardware-measured. Size and offset assertions plus a raw-byte named-mapping regression guard the host ABI.
 - winpthreads initializes a statically initialized rwlock on its first lock and fails a concurrent first lock with `EINVAL`, which `std::shared_mutex` and `std::shared_timed_mutex` ignore, so that lock does not exclude. Guest rwlocks ([Pthread.hpp](../../../core/libs/prx/libkernel/Pthread/include/Pthread.hpp)) and the host `std::shared_mutex` objects in [Recompiler.cpp](../../../core/shader/recompiler/Recompiler.cpp) are locked once when created. A new host `std::shared_mutex` used on Windows needs the same.
 
 ### Silent stubs
