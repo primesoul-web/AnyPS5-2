@@ -73,7 +73,8 @@ class Game:
         self.path, self.name, self.title_id = path, name, title_id
         self.icon, self.elf, self.kind, self.module_dir = icon, elf, kind, module_dir
         raw = title_id or path.name
-        self.key = "".join(c if c.isalnum() or c in "-_." else "_" for c in raw)
+        digest = hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()[:8]
+        self.key = "".join(c if c.isalnum() or c in "-_." else "_" for c in raw) + "-" + digest
 
 
 def read_param(game_dir):
@@ -278,6 +279,28 @@ def link_tree(src, dst, skip_top, log):
         log(f"Note: {copied} files copied (the cache is on another volume than the game).")
 
 
+def build_compiler(cfg):
+    try:
+        cache = (Path(cfg["anyps5_dir"]) / "build" / "CMakeCache.txt").read_text("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in cache.splitlines():
+        if line.startswith("CMAKE_CXX_COMPILER:"):
+            return Path(line.split("=", 1)[1].strip())
+    return None
+
+
+def mingw_dirs(cfg):
+    dirs = []
+    compiler = build_compiler(cfg)
+    if compiler is not None:
+        dirs.append(compiler.parent)
+    found = shutil.which("g++") or shutil.which("gcc")
+    if found:
+        dirs.append(Path(found).parent)
+    return dirs
+
+
 def sync_libs(out, cfg, log):
     src = libs_dir(cfg)
     prx = sorted(src.glob("*.prx")) if src.is_dir() else []
@@ -290,14 +313,12 @@ def sync_libs(out, cfg, log):
         if not d.exists() or d.stat().st_size != f.stat().st_size or d.stat().st_mtime < f.stat().st_mtime:
             shutil.copy2(f, d)
     if IS_WIN:
-        gcc = shutil.which("g++") or shutil.which("gcc")
-        dirs = [Path(gcc).parent] if gcc else []
-        dirs += [Path(cfg["anyps5_dir"]) / "tools" / "mingw64" / "bin", src]
+        dirs = mingw_dirs(cfg) + [src]
         for name in MINGW_DLLS:
             hit = next((d / name for d in dirs if (d / name).is_file()), None)
             if hit is None:
-                log(f"Warning: {name} (MinGW) not found; the .prx libraries may fail to load.")
-                continue
+                raise RuntimeError(f"{name} (MinGW runtime) not found next to the compiler of the build "
+                                   f"({', '.join(str(d) for d in dirs)}); the game cannot load without it.")
             for target in (dst, out):
                 if not (target / name).exists():
                     shutil.copy2(hit, target / name)

@@ -44,7 +44,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(set(games), {"a", "b"})
         self.assertEqual((games["a"].title_id, games["a"].name, games["a"].kind), ("PPSA00001", "Game A", "elf"))
         self.assertEqual((games["b"].title_id, games["b"].name), ("", "b"))
-        self.assertEqual(games["a"].key, "PPSA00001")
+        self.assertTrue(games["a"].key.startswith("PPSA00001-"))
+        self.assertNotEqual(launcher.Game(self.root / "x", "", "PPSA00001", None, None, "elf", None).key, games["a"].key)
 
     def test_scan_reports_self(self):
         self.game("s", executable=SELF)
@@ -97,6 +98,13 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(elf, src / "eboot.elf")
         self.assertEqual(sorted(p.relative_to(src).as_posix() for p in src.rglob("*") if p.is_file()),
                          ["Media/Modules/Il2CppUserAssemblies.prx", "eboot.elf", "sce_module/libc.prx"])
+
+    def test_build_compiler_from_cmake_cache(self):
+        write(self.root / "build" / "CMakeCache.txt", b"CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_CXX_COMPILER:STRING=F:/w/mingw64/bin/g++.exe\n")
+        cfg = {"anyps5_dir": str(self.root)}
+        self.assertEqual(launcher.build_compiler(cfg), Path("F:/w/mingw64/bin/g++.exe"))
+        self.assertEqual(launcher.mingw_dirs(cfg)[0], Path("F:/w/mingw64/bin"))
+        self.assertIsNone(launcher.build_compiler({"anyps5_dir": str(self.root / "none")}))
 
     def test_emulator_command(self):
         game = launcher.Game(Path("/g/x"), "X", "PPSA00002", None, Path("/g/x/eboot.bin"), "elf", None)
