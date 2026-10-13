@@ -105,6 +105,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(launcher.build_compiler(cfg), Path("F:/w/mingw64/bin/g++.exe"))
         self.assertEqual(launcher.mingw_dirs(cfg)[0], Path("F:/w/mingw64/bin"))
         self.assertIsNone(launcher.build_compiler({"anyps5_dir": str(self.root / "none")}))
+        write(self.root / "build" / "CMakeCache.txt", b"CMAKE_CXX_COMPILER:UNINITIALIZED=aps5-missing-g++\n")
+        self.assertIsNone(launcher.build_compiler(cfg))
 
     def test_emulator_command(self):
         game = launcher.Game(Path("/g/x"), "X", "PPSA00002", None, Path("/g/x/eboot.bin"), "elf", None)

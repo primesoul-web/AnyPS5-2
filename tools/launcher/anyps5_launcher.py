@@ -286,7 +286,9 @@ def build_compiler(cfg):
         return None
     for line in cache.splitlines():
         if line.startswith("CMAKE_CXX_COMPILER:"):
-            return Path(line.split("=", 1)[1].strip())
+            value = line.split("=", 1)[1].strip()
+            found = value if ("/" in value or "\\" in value) else shutil.which(value)
+            return Path(found) if found else None
     return None
 
 
