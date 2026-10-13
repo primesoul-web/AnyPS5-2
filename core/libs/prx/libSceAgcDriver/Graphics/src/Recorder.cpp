@@ -1981,7 +1981,6 @@ void Recorder::NoteDrawTraceToken(std::uint64_t token) noexcept {
             open->drawTraceTokens.push_back(token);
         }
     } catch (...) {
-        // Correlation metadata is best-effort and must not turn a recorded command into a draw failure.
     }
 }
 

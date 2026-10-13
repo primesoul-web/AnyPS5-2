@@ -30,7 +30,6 @@ void TraceMaterializationFailure(std::uint64_t token, const Submission& submissi
         AgcDriver::CaptureTrace::Log("draw-materialization-failed token=%llu submission=%llu queue=%x offset=%zu stage=%zu phase=%s exception=%s reason=%.256s",
                 static_cast<unsigned long long>(token), static_cast<unsigned long long>(submission.serial), submission.queue, packetOffset, stage, phase, type, reason.c_str());
     } catch (...) {
-        // A diagnostic record must never mask the failure it reports.
     }
 }
 
@@ -52,7 +51,6 @@ void TraceShaderRequestFailure(std::uint64_t token, const Submission& submission
                 static_cast<unsigned long long>(program.snapshot->codeAddress), program.codeOffset,
                 static_cast<unsigned>(program.binary.stage), static_cast<unsigned>(program.snapshot->type), reason.c_str());
     } catch (...) {
-        // Exception inspection and formatting are diagnostic-only.
     }
 }
 
