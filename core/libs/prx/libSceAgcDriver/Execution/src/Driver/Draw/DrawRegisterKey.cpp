@@ -2,8 +2,11 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawRegisterKey.hpp"
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <unordered_map>
 
 namespace AgcDriver::DriverDetail {
 
@@ -33,7 +36,7 @@ const auto& registerMasks() {
 
 }
 
-std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords, bool incremental) {
+std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords, bool incremental, RegisterStateKeyParts* parts) {
     const auto& masks = registerMasks();
     const auto fingerprint = [&](const Registers& registers, Graphics::RegisterBank bank) {
         const auto& mask = masks[static_cast<std::size_t>(bank)];
@@ -43,31 +46,53 @@ std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords, bool 
     shape = (shape ^ fingerprint(queue.shader, Graphics::RegisterBank::Shader)) * 0x100000001b3ull;
     shape = (shape ^ fingerprint(queue.userConfig, Graphics::RegisterBank::UserConfig)) * 0x100000001b3ull;
     auto exact = shape;
-    const auto words = [&](std::uint32_t base, std::uint32_t count) {
+    std::uint64_t userData = 0xcbf29ce484222325ull;
+    std::uint64_t auxiliary = 0xcbf29ce484222325ull;
+    const auto mixPart = [](std::uint64_t& part, std::uint64_t value) {
+        part ^= value;
+        part *= 0x100000001b3ull;
+    };
+    const auto words = [&](std::uint32_t base, std::uint32_t count, std::uint64_t& part) {
         for (auto it = queue.shader.lower_bound(base); it != queue.shader.end() && it->first < base + count; ++it) {
             exact = (exact ^ it->first) * 0x100000001b3ull;
             exact = (exact ^ it->second) * 0x100000001b3ull;
+            mixPart(part, it->first);
+            mixPart(part, it->second);
         }
     };
     for (const auto base : {0x00cu, 0x08cu, 0x10cu}) {
         const auto resources = queue.shader.find(base - 1);
         const auto count = resources == queue.shader.end() ? 0u : ((resources->second >> 1u) & 0x1fu) | (((resources->second >> 27u) & 1u) << 5u);
-        words(base, allUserWords ? 32u : std::min(count, 32u));
+        words(base, allUserWords ? 32u : std::min(count, 32u), userData);
     }
-    words(0x082u, 2);
-    words(0x102u, 2);
+    words(0x082u, 2, auxiliary);
+    words(0x102u, 2, auxiliary);
+    if (parts != nullptr) *parts = {shape, userData, auxiliary};
     return exact;
 }
 
 
-std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegistry& registry, std::uint64_t deviceSerial) {
+std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegistry& registry, std::uint64_t deviceSerial, std::array<std::uint64_t, 5>* components) {
     static const bool allUserWords = std::getenv("APS5_DRAW_KEY_ALL_USER_WORDS") != nullptr;
     static const bool verify = std::getenv("APS5_VERIFY_REGISTER_KEYS") != nullptr;
-    auto key = RegisterStateKey(queue, allUserWords);
+    RegisterStateKeyParts registerParts;
+    auto key = RegisterStateKey(queue, allUserWords, true, components != nullptr ? &registerParts : nullptr);
     if (verify && key != RegisterStateKey(queue, allUserWords, false)) throw std::runtime_error("incremental register fingerprint disagrees with full state");
+    if (components != nullptr) {
+        (*components)[0] = registerParts.stableRegisters;
+        (*components)[1] = registerParts.userDataRegisters;
+        (*components)[2] = registerParts.auxiliaryRegisters;
+        (*components)[3] = deviceSerial;
+        (*components)[4] = 0xcbf29ce484222325ull;
+    }
     const auto mix = [&](std::uint64_t value) {
         key ^= value;
         key *= 0x100000001b3ull;
+    };
+    const auto mixShaderIdentity = [&](std::uint64_t value) {
+        if (components == nullptr) return;
+        (*components)[3] ^= value;
+        (*components)[3] *= 0x100000001b3ull;
     };
     mix(deviceSerial);
     for (const auto base : {0x008u, 0x088u, 0x0c8u, 0x108u, 0x148u}) {
@@ -75,19 +100,61 @@ std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegis
         const auto high = queue.shader.find(base + 1);
         if (low == queue.shader.end() || high == queue.shader.end()) {
             mix(0);
+            mixShaderIdentity(0);
             continue;
         }
         const auto address = (static_cast<std::uint64_t>(low->second) << 8u) | (static_cast<std::uint64_t>(high->second & 0xffu) << 40u);
         auto it = registry.upper_bound(address);
         if (it == registry.begin()) {
             mix(1);
+            mixShaderIdentity(1);
             continue;
         }
         --it;
-        for (const auto& snapshot : it->second) mix(reinterpret_cast<std::uintptr_t>(snapshot.get()));
+        for (const auto& snapshot : it->second) {
+            const auto identity = reinterpret_cast<std::uintptr_t>(snapshot.get());
+            mix(identity);
+            mixShaderIdentity(identity);
+        }
         mix(address - it->first);
+        mixShaderIdentity(address - it->first);
     }
     return key;
+}
+
+void Driver::traceDrawKeyLookup(const std::array<std::uint64_t, 5>& components, bool cacheMiss) {
+    static const bool enabled = std::getenv("APS5_TRACE_DRAW_KEY_MISSES") != nullptr;
+    if (!enabled) return;
+    struct Previous {
+        std::array<std::uint64_t, 4> parts{};
+        std::size_t reports = 0;
+    };
+    thread_local std::unordered_map<std::uint64_t, Previous> previous;
+    thread_local std::size_t reports = 0;
+    const auto shaderSet = components[4];
+    if (previous.size() >= 2048 && previous.find(shaderSet) == previous.end()) previous.clear();
+    auto [it, inserted] = previous.try_emplace(shaderSet);
+    const std::array<std::uint64_t, 4> current{components[0], components[1], components[2], components[3]};
+    std::string changed;
+    const auto append = [&](const char* name) {
+        if (!changed.empty()) changed += ',';
+        changed += name;
+    };
+    if (inserted) {
+        changed = "first-seen";
+    } else {
+        if (it->second.parts[0] != current[0]) append("stable-registers");
+        if (it->second.parts[1] != current[1]) append("user-data-registers");
+        if (it->second.parts[2] != current[2]) append("auxiliary-registers");
+        if (it->second.parts[3] != current[3]) append("device");
+        if (changed.empty()) changed = "no-component-change";
+    }
+    it->second.parts = current;
+    if (!cacheMiss) return;
+    if (reports >= 256 || it->second.reports >= 4) return;
+    ++reports;
+    ++it->second.reports;
+    std::fprintf(stderr, "[draw-key-miss] shader-set=%016llx changed=%s\n", static_cast<unsigned long long>(shaderSet), changed.c_str());
 }
 
 bool Driver::sameVertexInfo(const ShaderRecompiler::ShaderVertexStageInfo& a, const ShaderRecompiler::ShaderVertexStageInfo& b) {

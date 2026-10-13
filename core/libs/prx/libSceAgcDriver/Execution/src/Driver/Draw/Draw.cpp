@@ -63,23 +63,30 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
 
     const bool useDrawEntries = drawEntries() && !ShaderRecompiler::DebugProbeActive() && dumpTarget == 0 && dumpSlot1 == 0;
     const bool registerKey = useDrawEntries && registerKeyEnabled();
+    static const bool traceDrawKeyMisses = std::getenv("APS5_TRACE_DRAW_KEY_MISSES") != nullptr;
     std::uint64_t drawKey = 0;
+    std::array<std::uint64_t, 5> drawKeyComponents{};
     std::shared_ptr<DrawEntry> entry;
     std::shared_ptr<const DrawDecode> decode;
     if (registerKey) {
         const auto keyStart = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-        drawKey = drawRegisterKey(queue, *submission.shaders, localDevice->Serial());
-        std::lock_guard cacheLock(drawCacheMutex);
-        ++drawEntryCounters.lookups;
-        ++drawEntryCounters.registerKeyLookups;
-        if (profile) drawEntryCounters.keyUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - keyStart).count();
-        const auto found = drawCache.find(drawKey);
-        if (found != drawCache.end()) {
-            entry = found->second;
-            decode = entry->decode;
-        } else {
-            ++drawEntryCounters.absent;
+        drawKey = drawRegisterKey(queue, *submission.shaders, localDevice->Serial(), traceDrawKeyMisses ? &drawKeyComponents : nullptr);
+        bool cacheMiss = false;
+        {
+            std::lock_guard cacheLock(drawCacheMutex);
+            ++drawEntryCounters.lookups;
+            ++drawEntryCounters.registerKeyLookups;
+            if (profile) drawEntryCounters.keyUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - keyStart).count();
+            const auto found = drawCache.find(drawKey);
+            if (found != drawCache.end()) {
+                entry = found->second;
+                decode = entry->decode;
+            } else {
+                ++drawEntryCounters.absent;
+                cacheMiss = true;
+            }
         }
+        if (traceDrawKeyMisses) traceDrawKeyLookup(drawKeyComponents, cacheMiss);
     }
     if (decode != nullptr && !DecodeProgramsCurrent(*decode, *submission.shaders)) {
         std::lock_guard cacheLock(drawCacheMutex);

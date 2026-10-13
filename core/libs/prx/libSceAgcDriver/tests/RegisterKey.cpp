@@ -52,6 +52,22 @@ void testFingerprints() {
     static_assert(!std::is_convertible_v<Registers::Reference, std::uint32_t&>);
     std::mt19937 random(42);
     QueueState queue;
+    RegisterStateKeyParts parts;
+    const auto initialKey = RegisterStateKey(queue, false, true, &parts);
+    const auto initialParts = parts;
+    queue.context[0x000] = 1;
+    check(RegisterStateKey(queue, false, true, &parts) != initialKey, "stable register mutation did not change the key");
+    check(parts.userDataRegisters == initialParts.userDataRegisters && parts.auxiliaryRegisters == initialParts.auxiliaryRegisters, "stable register change altered a dynamic-register fingerprint");
+    check(parts.stableRegisters != initialParts.stableRegisters, "stable register change was not attributed");
+    queue = QueueState{};
+    queue.shader[0x00b] = 2;
+    queue.shader[0x00c] = 1;
+    const auto beforeRuntimeKey = RegisterStateKey(queue, false, true, &parts);
+    const auto beforeRuntimeMutation = parts;
+    queue.shader[0x00c] = 2;
+    check(RegisterStateKey(queue, false, true, &parts) != beforeRuntimeKey, "runtime-register mutation did not change the key");
+    check(parts.userDataRegisters != beforeRuntimeMutation.userDataRegisters && parts.auxiliaryRegisters == beforeRuntimeMutation.auxiliaryRegisters && parts.stableRegisters == beforeRuntimeMutation.stableRegisters, "user-data register change was not isolated");
+    queue = QueueState{};
     auto reference = baselineRegisterStateKey(queue);
     auto tracked = RegisterStateKey(queue);
     const auto compare = [&] {
