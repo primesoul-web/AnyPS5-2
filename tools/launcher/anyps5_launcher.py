@@ -301,11 +301,21 @@ def build_compiler(cfg):
         cache = (Path(cfg["anyps5_dir"]) / "build" / "CMakeCache.txt").read_text("utf-8", errors="replace")
     except OSError:
         return None
+    values = {}
     for line in cache.splitlines():
-        if line.startswith("CMAKE_CXX_COMPILER:"):
-            value = line.split("=", 1)[1].strip()
-            found = value if ("/" in value or "\\" in value) else shutil.which(value)
-            return Path(found) if found else None
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.split(":", 1)[0]] = value.strip()
+    compiler = values.get("CMAKE_CXX_COMPILER", "")
+    if "/" in compiler or "\\" in compiler:
+        return Path(compiler)
+    found = shutil.which(compiler) if compiler else None
+    if found:
+        return Path(found)
+    for key in ("CMAKE_CXX_COMPILER_AR", "CMAKE_AR"):
+        tool = values.get(key, "")
+        if "/" in tool or "\\" in tool:
+            return Path(tool).parent / (compiler or "g++")
     return None
 
 
