@@ -117,7 +117,17 @@ def find_executable(d):
             return p, "elf"
         if magic in SELF_MAGICS and self_hit is None:
             self_hit = p
-    return (self_hit, "self") if self_hit else (None, "none")
+    if self_hit is None:
+        return None, "none"
+    try:
+        subs = sorted(p for p in d.iterdir() if p.is_dir())
+    except OSError:
+        subs = []
+    for sub in subs:
+        for n in ("eboot.elf", "eboot.bin"):
+            if read_magic(sub / n) == b"\x7fELF":
+                return sub / n, "elf"
+    return self_hit, "self"
 
 
 def scan_games(root, max_depth=4):

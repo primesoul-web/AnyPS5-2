@@ -52,6 +52,14 @@ class LauncherTests(unittest.TestCase):
         (game,) = launcher.scan_games(self.root / "games")
         self.assertEqual(game.kind, "self")
 
+    def test_scan_prefers_decrypted_elf_next_to_self(self):
+        folder = self.game("s", executable=SELF, title="PPSA00003")
+        write(folder / "decrypted" / "eboot.bin", ELF)
+        (game,) = launcher.scan_games(self.root / "games")
+        self.assertEqual(game.kind, "elf")
+        self.assertEqual(game.path, folder)
+        self.assertEqual(game.elf, folder / "decrypted" / "eboot.bin")
+
     def test_scan_skips_folders_without_executable(self):
         (self.root / "games" / "empty" / "x").mkdir(parents=True)
         self.assertEqual(launcher.scan_games(self.root / "games"), [])
