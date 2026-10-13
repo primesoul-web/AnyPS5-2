@@ -173,6 +173,8 @@ def extra_module_dirs(game, max_depth=3):
             entries = sorted(d.iterdir())
         except OSError:
             return
+        if depth > 0 and any(e.name in ("eboot.bin", "eboot.elf") for e in entries):
+            return
         if depth > 0 and any(e.is_file() and e.suffix.lower() == ".prx" and read_magic(e) in (b"\x7fELF",) + SELF_MAGICS
                              for e in entries):
             found.append(d.relative_to(game.path).as_posix())
@@ -363,9 +365,13 @@ def ensure_converted(game, cfg, log, force=False):
     for d in extra_module_dirs(game):
         extra += ["--module-dir", d]
     cmd = [rel] + (["--windows"] if IS_WIN else []) + extra + shlex.split(cfg.get("extra_args", "")) + [elf, exe]
-    rc = run_cmd(cmd, out, log)
+    with open(out / "convert.log", "w", encoding="utf-8") as record:
+        def tee(text):
+            record.write(text + "\n")
+            log(text)
+        rc = run_cmd(cmd, out, tee)
     if rc != 0 or not exe.exists():
-        raise RuntimeError(f"The relinker failed (exit code {rc}). See the log.")
+        raise RuntimeError(f"The relinker failed (exit code {rc}). See the log or {out / 'convert.log'}.")
     app0 = out / "app0"
     app0.mkdir(exist_ok=True)
     link_tree(game.path, app0, MODULE_DIRS, log)
@@ -430,7 +436,8 @@ class App:
         self.root, self.cfg = root, load_config()
         self.q, self.games, self.icons, self.busy = queue.Queue(), {}, {}, False
         root.title("AnyPS5 Launcher")
-        root.geometry("920x660")
+        root.geometry("920x720")
+        root.minsize(720, 520)
         self.build_ui()
         self.poll()
         if self.cfg["games_dir"]:
@@ -465,7 +472,7 @@ class App:
         self.tree.bind("<Double-1>", lambda e: self.play())
 
         bar = ttk.Frame(r, padding=8)
-        bar.pack(fill="x")
+        bar.pack(side="bottom", fill="x", before=mid)
         self.buttons = [
             ttk.Button(bar, text="Play", command=self.play),
             ttk.Button(bar, text="Reconvert", command=lambda: self.play(force=True, run=False)),
@@ -481,8 +488,13 @@ class App:
         self.build_btn.pack(side="right")
         self.reload_emulators()
 
-        self.logbox = tk.Text(r, height=11, state="disabled", wrap="none")
-        self.logbox.pack(fill="both", padx=8, pady=(0, 8))
+        logframe = ttk.Frame(r, padding=(8, 0, 8, 8))
+        logframe.pack(side="bottom", fill="x", before=bar)
+        self.logbox = tk.Text(logframe, height=11, state="disabled", wrap="none")
+        logsb = ttk.Scrollbar(logframe, command=self.logbox.yview)
+        self.logbox.configure(yscrollcommand=logsb.set)
+        self.logbox.pack(side="left", fill="both", expand=True)
+        logsb.pack(side="left", fill="y")
 
     def log(self, text):
         self.q.put(("log", text))

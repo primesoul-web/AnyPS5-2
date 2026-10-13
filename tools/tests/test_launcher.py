@@ -64,6 +64,7 @@ class LauncherTests(unittest.TestCase):
         out = self.root / "out"
         launcher.stage_source(game, out, lambda message: None)
         self.assertEqual((out / "src" / "sce_module" / "libc.prx").read_bytes(), ELF)
+        self.assertEqual(launcher.extra_module_dirs(game), [])
 
     def test_scan_skips_folders_without_executable(self):
         (self.root / "games" / "empty" / "x").mkdir(parents=True)
