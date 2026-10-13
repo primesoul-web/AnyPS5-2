@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""AnyPS5 Launcher: lists the PS5 games in a folder, converts each one with the relinker
-the first time (cached) and runs it. Python 3.8+ standard library only."""
 import hashlib
 import json
 import os
 import queue
 import shlex
 import shutil
-import struct
 import subprocess
 import sys
 import threading
@@ -149,6 +146,39 @@ def scan_games(root, max_depth=4):
     return games
 
 
+def read_magic(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read(4)
+    except OSError:
+        return b""
+
+
+def extra_module_dirs(game, max_depth=3):
+    found = []
+
+    def walk(d, depth):
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            return
+        if depth > 0 and any(e.is_file() and e.suffix.lower() == ".prx" and read_magic(e) in (b"\x7fELF",) + SELF_MAGICS
+                             for e in entries):
+            found.append(d.relative_to(game.path).as_posix())
+        if depth >= max_depth:
+            return
+        for e in entries:
+            if e.is_dir() and not (depth == 0 and e.name in MODULE_DIRS + ("sce_sys",)):
+                walk(e, depth + 1)
+
+    walk(game.path, 0)
+    return found
+
+
+def module_dirs(game):
+    return [m for m in MODULE_DIRS if (game.path / m).is_dir()] + extra_module_dirs(game)
+
+
 def fingerprint(game, cfg, relinker):
     h = hashlib.sha256()
 
@@ -157,12 +187,10 @@ def fingerprint(game, cfg, relinker):
         h.update(f"{p}|{st.st_size}|{int(st.st_mtime)}\n".encode())
 
     add(game.elf)
-    for m in MODULE_DIRS:
-        d = game.path / m
-        if d.is_dir():
-            for f in sorted(d.rglob("*")):
-                if f.is_file():
-                    add(f)
+    for m in module_dirs(game):
+        for f in sorted((game.path / m).iterdir()):
+            if f.is_file():
+                add(f)
     if relinker:
         add(relinker)
     h.update(f"{cfg.get('extra_args','')}|{sys.platform}".encode())
@@ -191,66 +219,24 @@ def game_status(game, cfg):
     return "Ready" if read_state(out).get("fingerprint") == fingerprint(game, cfg, rel) else "Outdated"
 
 
-def unself(src, dst):
-    """Extracts the ELF from an unencrypted PS4/PS5 SELF (a decrypted dump)."""
-    d = Path(src).read_bytes()
-    if d[:4] not in SELF_MAGICS:
-        raise RuntimeError(f"{Path(src).name}: not a SELF")
-    num = struct.unpack_from("<H", d, 0x18)[0]
-    elf = 0x20 + num * 0x20
-    if d[elf:elf + 4] != b"\x7fELF":
-        raise RuntimeError(f"{Path(src).name}: no ELF header inside the SELF")
-    phoff, = struct.unpack_from("<Q", d, elf + 0x20)
-    phentsize, phnum = struct.unpack_from("<HH", d, elf + 0x36)
-    phdrs = []
-    for i in range(phnum):
-        _t, _f, off, _va, _pa, fsz, _msz, _al = struct.unpack_from("<IIQQQQQQ", d, elf + phoff + i * phentsize)
-        phdrs.append((off, fsz))
-    out = bytearray(max([phoff + phnum * phentsize] + [o + f for o, f in phdrs]))
-    head = phoff + phnum * phentsize
-    out[:head] = d[elf:elf + head]
-    for i in range(num):
-        props, off, fsz, _msz = struct.unpack_from("<QQQQ", d, 0x20 + i * 32)
-        if not props & 0x800:
-            continue
-        if props & 0x8:
-            raise RuntimeError(f"{Path(src).name}: compressed segment (unsupported SELF)")
-        if props & 0x2:
-            raise RuntimeError(f"{Path(src).name}: encrypted segment; a decrypted dump is needed")
-        idx = props >> 20
-        if idx >= phnum:
-            raise RuntimeError(f"{Path(src).name}: segment {idx} is outside the program header table")
-        po, pf = phdrs[idx]
-        n = min(fsz, pf)
-        out[po:po + n] = d[off:off + n]
-    Path(dst).write_bytes(out)
-
-
 def stage_source(game, out, log):
-    """Creates out/src/ with the ELF and modules for the relinker (extracting SELFs when needed)."""
     src = out / "src"
     src.mkdir(parents=True, exist_ok=True)
     elf = src / "eboot.elf"
     if game.kind == "self":
-        log("Extracting the ELF from the eboot SELF...")
-        unself(game.elf, elf)
-    else:
-        link_or_copy(game.elf, elf)
-    for m in MODULE_DIRS:
+        raise RuntimeError(f"{game.elf.name} is a SELF; the launcher takes decrypted ELF dumps only.")
+    link_or_copy(game.elf, elf)
+    for m in module_dirs(game):
         md = game.path / m
-        if not md.is_dir():
-            continue
-        (src / m).mkdir(exist_ok=True)
+        (src / m).mkdir(parents=True, exist_ok=True)
         for f in sorted(md.iterdir()):
             if not f.is_file() or f.name.endswith(".esbak"):
                 continue
-            with open(f, "rb") as fh:
-                magic = fh.read(4)
-            if magic in SELF_MAGICS:
-                log(f"Extracting the ELF from {m}/{f.name}...")
-                unself(f, src / m / f.name)
-            else:
-                link_or_copy(f, src / m / f.name)
+            if m not in MODULE_DIRS and f.suffix.lower() != ".prx":
+                continue
+            if read_magic(f) in SELF_MAGICS:
+                raise RuntimeError(f"{m}/{f.name} is a SELF; the launcher takes decrypted ELF dumps only.")
+            link_or_copy(f, src / m / f.name)
     return elf
 
 
@@ -272,8 +258,6 @@ def run_cmd(cmd, cwd, log):
 
 
 def link_tree(src, dst, skip_top, log):
-    """Hard-links (or copies, across volumes) the game files into app0/.
-    The originals are never touched: deleting the cache only removes links."""
     copied = 0
     for root, dirs, files in os.walk(src):
         rel = Path(root).relative_to(src)
@@ -330,12 +314,17 @@ def ensure_converted(game, cfg, log, force=False):
         log("Already converted: skipping conversion.")
         sync_libs(out, cfg, log)
         return exe
+    if game.kind == "self":
+        raise RuntimeError(f"{game.elf.name} is a SELF; the launcher takes decrypted ELF dumps only.")
     log(f"Converting {game.name} (first run only)...")
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     elf = stage_source(game, out, log)
-    cmd = [rel] + (["--windows"] if IS_WIN else []) + shlex.split(cfg.get("extra_args", "")) + [elf, exe]
+    extra = []
+    for d in extra_module_dirs(game):
+        extra += ["--module-dir", d]
+    cmd = [rel] + (["--windows"] if IS_WIN else []) + extra + shlex.split(cfg.get("extra_args", "")) + [elf, exe]
     rc = run_cmd(cmd, out, log)
     if rc != 0 or not exe.exists():
         raise RuntimeError(f"The relinker failed (exit code {rc}). See the log.")
@@ -476,6 +465,8 @@ class App:
                         self.tree.set(m[1], "state", m[2])
                 elif m[0] == "busy":
                     self.busy = m[1]
+                elif m[0] == "refresh":
+                    self.refresh()
                 elif m[0] == "error":
                     messagebox.showerror("AnyPS5 Launcher", m[1])
         except queue.Empty:
@@ -595,7 +586,7 @@ class App:
 
         def job():
             build_anyps5(cfg, self.log)
-            self.refresh()
+            self.q.put(("refresh",))
         self.worker(job)
 
     def settings(self):
