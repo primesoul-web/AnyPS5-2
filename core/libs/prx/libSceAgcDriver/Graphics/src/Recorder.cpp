@@ -1811,7 +1811,7 @@ bool Recorder::GpuTimingEnabled() {
 }
 
 bool Recorder::BatchStampsEnabled() {
-    return GpuTimingEnabled() || DrawProfiled();
+    return GpuTimingEnabled() || DrawProfiled() || PerformanceTrace::Configured();
 }
 
 void Recorder::CountBarriers(CommandClass which, std::uint32_t count) {
@@ -1903,7 +1903,7 @@ std::uint32_t Recorder::BeginGpuTiming(std::uint64_t key) {
 
 std::uint32_t Recorder::beginTiming(std::uint64_t key) {
     const bool full = GpuTimingEnabled();
-    if (!full && !(key == BatchTimingKey && DrawProfiled())) return NoTiming;
+    if (!full && !(key == BatchTimingKey && BatchStampsEnabled())) return NoTiming;
     const auto commands = open->commands;
     const std::uint32_t queryCount = full ? MaxTimedRanges * 2 : 2;
     if (open->queries == VK_NULL_HANDLE) {
@@ -2358,6 +2358,7 @@ void Recorder::readGpuTiming(Batch& batch) {
         if (batch.batchTiming == 0 && stamps[1] >= stamps[0]) {
             batch.gpuStartNs = static_cast<double>(stamps[0]) * period;
             batch.gpuEndNs = static_cast<double>(stamps[1]) * period;
+            PerformanceTrace::GpuRange("batch", batch.gpuStartNs, batch.gpuEndNs);
         }
         return;
     }
@@ -2373,10 +2374,12 @@ void Recorder::readGpuTiming(Batch& batch) {
             // The whole batch: apart from the per-program totals it contains.
             batch.gpuStartNs = static_cast<double>(stamps[i * 2]) * period;
             batch.gpuEndNs = static_cast<double>(stamps[i * 2 + 1]) * period;
+            PerformanceTrace::GpuRange("batch", batch.gpuStartNs, batch.gpuEndNs);
             timingBatchMs += ns / 1e6;
             continue;
         }
         const auto key = batch.timedKeys[i];
+        if (key >= ClassKey(CommandClass::DispatchLeading) && key < ClassKey(CommandClass::Count)) PerformanceTrace::GpuRange(CommandClassNames[key - ClassKey(CommandClass::DispatchLeading)], static_cast<double>(stamps[i * 2]) * period, static_cast<double>(stamps[i * 2 + 1]) * period);
         auto& totals = timingByKey[key];
         ++totals.count;
         totals.ms += ns / 1e6;
@@ -3306,9 +3309,6 @@ void Recorder::SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUn
         // later batch's own ordering against this write-back is its recorder's business at record
         // time (FillBuffer and DispatchIndirect consult copiedWriters; a later copied writer's
         // write-back runs after this one in finish order; a label behind completions lands after).
-        // Known gap, not introduced here: a later batch writing the same range GPU-direct in place
-        // (a writable region bound in place, or a GPU copy-back) is not ordered against this
-        // write-back by the resource build; it went from deterministically stale to racy.
         announcedSource = 4;
         announcedSite = nullptr;
         ++holdCounters.completionSyncsSkipped;

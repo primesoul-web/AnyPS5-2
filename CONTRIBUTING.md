@@ -53,11 +53,14 @@ The [pull request template](.github/pull_request_template.md) is the checklist f
 - Open pull requests per author are limited by how many of theirs are merged into `main`: 1 with none merged, 20 with at least 1, no limit from 20. A pull request opened or reopened over the limit is closed automatically; reopen it once another one is merged or closed.
 - Before starting, check that no open pull request already implements the same functions.
 - Keep the branch up to date with `main` and resolve conflicts yourself; rebasing and force-pushing is fine.
+- A pull request that conflicts with `main` and has no activity for 7 days is labeled `stale` with a reminder. It is not closed.
 - If a pull request needs another one first, say so on the checklist line (`Depends on: #N`; `none` otherwise).
 - If a pull request fixes a stop or a wrong result seen on a title, name it on the checklist line with the title ID and its [Game bring-up](https://github.com/boykopovar/AnyPS5/discussions/categories/game-bring-up) discussion (`Unblocks: PPSA01325 #3232`; `none` otherwise). Reviewers review these first.
 - Fixes a title needs go to `main` as pull requests. A Game bring-up discussion lists the open pull requests and local changes the title still needs; update the list when one is merged, closed or replaced.
 - The PR overlap comment lists open pull requests that change the same lines or exports; agree with their authors which one goes first and declare it with `Depends on`.
 - Run the tests before opening the pull request and describe what was tested (OS, title or homebrew).
+- A pull request that claims a change in speed shows the summary lines of `main` and of the change, from the same machine and scene, and attaches the traces, captured as the [Performance report](.github/ISSUE_TEMPLATE/performance.yml) issue form describes. A slow scene is reported with the same form.
+- Changes to the AGC driver, the shader recompiler or VideoOut name each GPU the GPU tests ran on (vendor, model, driver, OS) on the `GPUs tested` checklist line. CI runs these tests only on lavapipe, and hardware drivers fail where lavapipe and other vendors pass, so a reviewer can ask for a run on another vendor before merging.
 - Investigation notes, reports, screenshots and logs go in the pull request, not in the repository. Images for documentation go in the [gist](https://gist.github.com/boykopovar/0e53f2e1426f29ecd41e3b51540b8a90) comments.
 - Say whether the change was written with AI assistance. The author of the pull request is responsible for every line of it.
 
