@@ -105,6 +105,7 @@ struct State {
     bool hasColorTarget;
     bool rectList = false;
     bool dualSourceBlend = false;
+    std::uint32_t reversedBlend = 0;
     VkExtent2D renderExtent;
     std::uint32_t renderLayers = 1;
     std::uint32_t layerExports = 0;
@@ -139,6 +140,11 @@ std::array<std::uint8_t, 8> ExportMappings(const State& state);
 std::array<ShaderRecompiler::ColorExportPacking, 8> ExportPackings(const State& state);
 ShaderRecompiler::RasterPrimitive RasterPrimitiveOf(const State& state);
 ColorTarget DecodeColorBuffer(const Registers& context, std::uint32_t slot);
+struct ReversedBlend {
+    VkPipelineColorBlendAttachmentState blend;
+    std::uint32_t shaderCode;
+};
+ReversedBlend TranslateReversedBlend(std::uint32_t blendControl, std::uint8_t componentMapping, VkFormat format, bool forceDestinationAlphaOne);
 std::size_t CmaskBytes(std::uint32_t width, std::uint32_t height);
 std::uint32_t ColorWriteMask(const Registers& context);
 GuestTextureResource SurfaceForTarget(const ColorTarget& color);
