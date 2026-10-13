@@ -59,6 +59,11 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(game.kind, "elf")
         self.assertEqual(game.path, folder)
         self.assertEqual(game.elf, folder / "decrypted" / "eboot.bin")
+        write(folder / "sce_module" / "libc.prx", SELF)
+        write(folder / "decrypted" / "sce_module" / "libc.prx", ELF)
+        out = self.root / "out"
+        launcher.stage_source(game, out, lambda message: None)
+        self.assertEqual((out / "src" / "sce_module" / "libc.prx").read_bytes(), ELF)
 
     def test_scan_skips_folders_without_executable(self):
         (self.root / "games" / "empty" / "x").mkdir(parents=True)

@@ -187,7 +187,12 @@ def extra_module_dirs(game, max_depth=3):
 
 
 def module_dirs(game):
-    return [m for m in MODULE_DIRS if (game.path / m).is_dir()] + extra_module_dirs(game)
+    return [m for m in MODULE_DIRS if module_source(game, m).is_dir()] + extra_module_dirs(game)
+
+
+def module_source(game, m):
+    near = game.elf.parent / m
+    return near if near.is_dir() else game.path / m
 
 
 def fingerprint(game, cfg, relinker):
@@ -199,7 +204,7 @@ def fingerprint(game, cfg, relinker):
 
     add(game.elf)
     for m in module_dirs(game):
-        for f in sorted((game.path / m).iterdir()):
+        for f in sorted(module_source(game, m).iterdir()):
             if f.is_file():
                 add(f)
     if relinker:
@@ -238,7 +243,7 @@ def stage_source(game, out, log):
         raise RuntimeError(f"{game.elf.name} is a SELF; the launcher takes decrypted ELF dumps only.")
     link_or_copy(game.elf, elf)
     for m in module_dirs(game):
-        md = game.path / m
+        md = module_source(game, m)
         (src / m).mkdir(parents=True, exist_ok=True)
         for f in sorted(md.iterdir()):
             if not f.is_file() or f.name.endswith(".esbak"):
