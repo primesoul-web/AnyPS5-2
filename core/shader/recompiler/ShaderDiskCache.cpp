@@ -651,6 +651,7 @@ void encodeShaderInfo(Writer& writer, const ShaderInfo& info) {
         out.Value(image.constantSwizzleCompatible);
         out.Value(image.flatVolumeCompatible);
         out.Value(image.flatLineCompatible);
+        out.Value(image.flatVolumeLineCompatible);
         out.Value(image.foldTexelOffsetsOnly);
         out.Value(image.byElements);
         out.Value(image.byComponents);
@@ -751,6 +752,7 @@ void decodeShaderInfo(Reader& reader, ShaderInfo& info) {
         in.Value(image.constantSwizzleCompatible);
         in.Value(image.flatVolumeCompatible);
         in.Value(image.flatLineCompatible);
+        in.Value(image.flatVolumeLineCompatible);
         in.Value(image.foldTexelOffsetsOnly);
         in.Value(image.byElements);
         in.Value(image.byComponents);
