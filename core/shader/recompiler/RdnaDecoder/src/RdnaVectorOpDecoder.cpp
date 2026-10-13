@@ -1126,6 +1126,9 @@ constexpr Vop1SdwaRule vop1SdwaRules[] = {
     {RdnaOpcode::VCvtF32U32, sdwaSelAll(), 0, 0, false},
     {RdnaOpcode::VCvtF32I32, sdwaSelAll(), 0, 0, false},
     {RdnaOpcode::VCvtF32Ubyte0, sdwaSelAll(), 0, 0, false},
+    {RdnaOpcode::VCvtF32Ubyte1, sdwaSelAll(), 0, 0, false},
+    {RdnaOpcode::VCvtF32Ubyte2, sdwaSelAll(), 0, 0, false},
+    {RdnaOpcode::VCvtF32Ubyte3, sdwaSelAll(), 0, 0, false},
     {RdnaOpcode::VNotB32, sdwaSelAll(), sdwaSelBytes() | sdwaSelWords(), sdwaSelAll(), false},
     {RdnaOpcode::VFfblB32, sdwaSelAll(), 0, 0, false},
     {RdnaOpcode::VFfbhU32, sdwaSelAll(), 0, 0, false},
@@ -1932,7 +1935,7 @@ bool supportsNativeVop3SourceModifiers(RdnaOpcode opcode) {
 }
 
 bool supportsNativeVop3ResultModifiers(RdnaOpcode opcode) {
-    if (isVop1FloatResultOpcode(opcode)) {
+    if (isVop1FloatResultOpcode(opcode) || isNativeVop3F16TernaryOpcode(opcode)) {
         return true;
     }
     switch (opcode) {
@@ -1946,7 +1949,6 @@ bool supportsNativeVop3ResultModifiers(RdnaOpcode opcode) {
         case RdnaOpcode::VMacF32:
         case RdnaOpcode::VMadF32:
         case RdnaOpcode::VFmaF32:
-        case RdnaOpcode::VFmaF16:
         case RdnaOpcode::VAddF16:
         case RdnaOpcode::VSubF16:
         case RdnaOpcode::VSubrevF16:

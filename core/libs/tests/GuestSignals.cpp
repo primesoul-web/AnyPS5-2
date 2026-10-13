@@ -7,6 +7,9 @@
 #include <chrono>
 #include <thread>
 using Handler = void (APS5_VABI *)(int);
+struct GuestSignalSet {
+    std::uint32_t bits[4];
+};
 extern "C" {
 Handler APS5_VABI signal_nid_postfix(int, Handler);
 int APS5_VABI raise_nid_postfix(int);
@@ -18,10 +21,8 @@ int APS5_VABI pthread_sigmask_nid_postfix(int, const void*, void*);
 int* APS5_VABI __error_nid_postfix();
 int APS5_VABI _is_signal_return_nid_postfix(std::uint64_t);
 unsigned int APS5_VABI GuestAlarm_nid_no_patch(unsigned int);
+int APS5_VABI sigpending_nid_postfix(GuestSignalSet*);
 }
-struct GuestSignalSet {
-    std::uint32_t bits[4];
-};
 struct GuestSigaction {
     std::uintptr_t handler;
     int flags;
@@ -60,10 +61,8 @@ int main() {
     Require(pthread_kill_nid_postfix(nullptr, 15) == 3);
     Require(pthread_kill_nid_postfix(nullptr, 128) == 3);
     Require(pthread_kill_nid_postfix(nullptr, 129) == 22);
-    bool threw = false;
-    try { pthread_kill_nid_postfix(reinterpret_cast<void*>(std::uintptr_t{0x10}), 15); }
-    catch (const std::runtime_error&) { threw = true; }
-    Require(threw && received == 0);
+    Require(pthread_kill_nid_postfix(reinterpret_cast<void*>(std::uintptr_t{0x10}), 15) == 3);
+    Require(received == 0);
     Require(signal_nid_postfix(15, ignore) != invalid);
     received = 0;
     Require(raise_nid_postfix(15) == 0 && received == 0);
@@ -202,4 +201,24 @@ int main() {
     Require(sigaction_nid_postfix(13, nullptr, &current) == 0 && current.handler == static_cast<std::uintptr_t>(-1) && current.flags == 0x2);
     Require(signal_nid_postfix(13, nullptr) == invalid);
     Require(sigaction_nid_postfix(13, nullptr, &current) == 0 && current.handler == 0);
+    *__error_nid_postfix() = 0;
+    Require(sigpending_nid_postfix(nullptr) == -1);
+    Require(*__error_nid_postfix() == 14);
+    *__error_nid_postfix() = 42;
+    GuestSignalSet pendingSignals{{0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}};
+    Require(sigpending_nid_postfix(&pendingSignals) == 0);
+    Require(pendingSignals.bits[0] == 0 && pendingSignals.bits[1] == 0 && pendingSignals.bits[2] == 0 && pendingSignals.bits[3] == 0);
+    Require(*__error_nid_postfix() == 42);
+    Require(signal_nid_postfix(15, nullptr) == Callback);
+    Require(signal_nid_postfix(15, Callback) == nullptr);
+    received = 0;
+    Require(sigprocmask_nid_postfix(1, &termMask, nullptr) == 0);
+    Require(raise_nid_postfix(15) == 0 && received == 0);
+    pendingSignals = {{0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}};
+    Require(sigpending_nid_postfix(&pendingSignals) == 0);
+    Require(pendingSignals.bits[0] == (1u << 14) && pendingSignals.bits[1] == 0 && pendingSignals.bits[2] == 0 && pendingSignals.bits[3] == 0);
+    Require(sigprocmask_nid_postfix(2, &termMask, nullptr) == 0 && received == 15);
+    Require(sigpending_nid_postfix(&pendingSignals) == 0);
+    Require(pendingSignals.bits[0] == 0 && pendingSignals.bits[1] == 0 && pendingSignals.bits[2] == 0 && pendingSignals.bits[3] == 0);
+    Require(signal_nid_postfix(15, nullptr) == Callback);
 }

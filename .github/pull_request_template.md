@@ -1,7 +1,7 @@
 ### What
 
 ### Tested
-<!-- OS, title or homebrew, what was checked. "Not tested" is a valid answer. -->
+<!-- OS, title or homebrew, what was checked. "Not tested" is a valid answer. A performance change: the summary lines of main and of this PR from the same machine and scene, with the traces attached, captured as the Performance report issue form describes. -->
 
 ### Checklist
 <!-- Rules behind each item: https://github.com/boykopovar/AnyPS5/blob/main/CONTRIBUTING.md -->
@@ -14,4 +14,5 @@
 - [ ] Generic behaviour, not specific to one title
 - [ ] Depends on: <!-- #PR, or none -->
 - [ ] Unblocks: <!-- title ID and Game bring-up discussion, e.g. PPSA01325 #3232, or none -->
+- [ ] GPUs tested: <!-- for AGC, shader recompiler or VideoOut changes: vendor, model, driver and OS of each GPU the GPU tests ran on; otherwise n/a -->
 - [ ] AI-assisted: <!-- yes / no -->

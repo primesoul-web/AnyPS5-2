@@ -40,10 +40,12 @@
 #endif
 
 extern "C" int* APS5_VABI __error_nid_postfix();
+extern "C" int APS5_VABI stat_nid_postfix(const char* path, FileStat* sb);
 
 namespace {
 
 constexpr int sceInvalidArgument = static_cast<int>(0x80020016u);
+constexpr int errnoNoSuchProcess = 3;
 constexpr int errnoNoChild = 10;
 constexpr int errnoBadAddress = 14;
 constexpr int errnoInvalidArgument = 22;
@@ -116,10 +118,15 @@ bool hasPriorityRange(int policy) {
     return policy == 1 || policy == 3;
 }
 
+constexpr int guestNoProcess = 3;
 constexpr int guestFault = 14;
 constexpr int guestInvalid = 22;
 constexpr int guestRlimitCpu = 0;
 constexpr int guestRlimitFsize = 1;
+constexpr int guestPriorityProcess = 0;
+constexpr int guestPriorityGroup = 1;
+constexpr int guestPriorityUser = 2;
+constexpr int guestNice = 0;
 constexpr int guestRlimitData = 2;
 constexpr int guestRlimitCore = 4;
 constexpr int guestRlimitSbsize = 9;
@@ -214,8 +221,9 @@ int APS5_VABI getpid_nid_postfix(void) {
 }
 
 int APS5_VABI getsid_nid_postfix(int pid) {
-    (void)pid;
-    NotImplemented_nid_no_patch("getsid: process sessions");
+    const int self = getpid_nid_postfix();
+    if (pid == 0 || pid == self) return self;
+    *__error_nid_postfix() = errnoNoSuchProcess;
     return -1;
 }
 
@@ -300,6 +308,33 @@ int APS5_VABI waitpid_nid_postfix(int pid, int* status, int options) {
     return -1;
 }
 
+int APS5_VABI getrlimit_nid_postfix(int resource, GuestResourceLimit* limit);
+
+int APS5_VABI setrlimit_nid_postfix(int resource, const GuestResourceLimit* limit) {
+    if (limit == nullptr) {
+        *__error_nid_postfix() = guestFault;
+        return -1;
+    }
+    if (resource < 0 || resource >= guestRlimitCount) {
+        *__error_nid_postfix() = guestInvalid;
+        return -1;
+    }
+
+    GuestResourceLimit requested = *limit;
+    if (requested.rlim_cur < 0)
+        requested.rlim_cur = guestRlimitInfinity;
+    if (requested.rlim_max < 0)
+        requested.rlim_max = guestRlimitInfinity;
+    if (requested.rlim_cur > requested.rlim_max)
+        requested.rlim_cur = requested.rlim_max;
+
+    GuestResourceLimit current{};
+    getrlimit_nid_postfix(resource, &current);
+    if (requested.rlim_cur != current.rlim_cur || requested.rlim_max != current.rlim_max)
+        throw std::runtime_error("setrlimit: changing the limit of resource " + std::to_string(resource) + " is not supported");
+    return 0;
+}
+
 int APS5_VABI wait_nid_postfix(int* status) {
     return waitpid_nid_postfix(-1, status, 0);
 }
@@ -315,6 +350,14 @@ int APS5_VABI execv_nid_postfix(const char* path, char* const* arguments) {
     (void)path;
     (void)arguments;
     NotImplemented_nid_no_patch("execv: executable replacement");
+    return -1;
+}
+
+int APS5_VABI execve_nid_postfix(const char* path, char* const* arguments, char* const* environment) {
+    (void)path;
+    (void)arguments;
+    (void)environment;
+    NotImplemented_nid_no_patch("execve: executable replacement");
     return -1;
 }
 
@@ -510,6 +553,20 @@ int APS5_VABI getrlimit_nid_postfix(int resource, GuestResourceLimit* limit) {
     }
 }
 
+int APS5_VABI getpriority_nid_postfix(int which, int who) {
+    if (which != guestPriorityProcess && which != guestPriorityGroup && which != guestPriorityUser) {
+        *__error_nid_postfix() = guestInvalid;
+        return -1;
+    }
+    const bool found = which == guestPriorityUser ? (who == 0 ? getuid_nid_postfix() : who) == getuid_nid_postfix()
+                                                  : who == 0 || who == getpid_nid_postfix();
+    if (!found) {
+        *__error_nid_postfix() = guestNoProcess;
+        return -1;
+    }
+    return guestNice;
+}
+
 int APS5_VABI sceKernelIsTrinityMode(void) {
     return 0;
 }
@@ -545,6 +602,15 @@ int APS5_VABI setreuid_nid_postfix(std::uint32_t ruid, std::uint32_t euid) {
         throw std::runtime_error("setreuid: unsupported real user id " + std::to_string(ruid));
     if (euid != 0 && euid != unchanged)
         throw std::runtime_error("setreuid: unsupported effective user id " + std::to_string(euid));
+    return 0;
+}
+
+int APS5_VABI setregid_nid_postfix(std::uint32_t rgid, std::uint32_t egid) {
+    constexpr std::uint32_t unchanged = 0xffffffffu;
+    if (rgid != 0 && rgid != unchanged)
+        throw std::runtime_error("setregid: unsupported real group id " + std::to_string(rgid));
+    if (egid != 0 && egid != unchanged)
+        throw std::runtime_error("setregid: unsupported effective group id " + std::to_string(egid));
     return 0;
 }
 
