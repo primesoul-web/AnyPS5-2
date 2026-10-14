@@ -4,6 +4,9 @@
 #include <mbedtls/asn1.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
+#include <mbedtls/md.h>
+#include <mbedtls/oid.h>
+#include <mbedtls/pem.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/platform_util.h>
@@ -26,6 +29,26 @@ namespace {
 constexpr int ErrorNotFound = static_cast<int>(0x8095f004);
 constexpr int ErrorInvalidArg = static_cast<int>(0x8095177a);
 constexpr int ErrorInvalidId = static_cast<int>(0x8095f006);
+
+constexpr std::int64_t TicksPerSecond = 1000000;
+constexpr std::int64_t TicksPerMinute = 60 * TicksPerSecond;
+constexpr std::int64_t TicksPerHour = 60 * TicksPerMinute;
+constexpr std::int64_t TicksPerDay = 24 * TicksPerHour;
+constexpr std::int64_t UnixEpochDays = 719162;
+
+std::int64_t DaysFromCivil(std::int64_t year, unsigned month, unsigned day) {
+    year -= month <= 2;
+    const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
+    const auto yearOfEra = static_cast<unsigned>(year - era * 400);
+    const unsigned dayOfYear = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+    const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+    return era * 146097 + static_cast<std::int64_t>(dayOfEra) - 719468 + UnixEpochDays;
+}
+
+std::uint64_t TimeToTick(const mbedtls_x509_time& time) {
+    return static_cast<std::uint64_t>(DaysFromCivil(time.year, time.mon, time.day)) * TicksPerDay
+        + time.hour * TicksPerHour + time.min * TicksPerMinute + time.sec * TicksPerSecond;
+}
 
 struct Pool {
     std::size_t size, current = 0, peak = 0;
@@ -166,10 +189,20 @@ struct SslConnection {
     void* verifyArgument;
 };
 
+struct CertNameEntry {
+    std::string oid;
+    std::string value;
+};
+
+struct CertName {
+    std::vector<CertNameEntry> entries;
+};
+
 struct Runtime {
     std::mutex mutex;
     std::unordered_map<int, std::unique_ptr<Context>> contexts;
     std::unordered_map<int, SslConnection> connections;
+    std::unordered_map<void*, std::unique_ptr<CertName>> certNames;
     unsigned nextHandle = 1;
     Runtime() {
         if (mbedtls_platform_set_calloc_free(PoolCalloc, PoolFree) != 0)
@@ -234,6 +267,51 @@ std::size_t CertificateCount(const Context& context) {
     std::size_t count = 0;
     for (const auto& chain : context.authorities) count = Add(count, chain->handles.size());
     return count;
+}
+
+const mbedtls_x509_crt* RequireCertificate(const char* function, void* cert, Context** outContext = nullptr) {
+    if (!cert) throw std::invalid_argument(std::string(function) + ": null certificate");
+    auto& state = State();
+    for (const auto& [_, ctx] : state.contexts) {
+        for (const auto& handle : ctx->certificateHandles) {
+            if (handle.get() == cert) {
+                if (handle->owner.expired() || !handle->certificate) {
+                    throw std::invalid_argument(std::string(function) + ": expired certificate");
+                }
+                if (outContext) *outContext = ctx.get();
+                return handle->certificate;
+            }
+        }
+    }
+    throw std::invalid_argument(std::string(function) + ": unknown certificate");
+}
+
+void* ExtractCertName(const char* function, void* sslCert, bool subject) {
+    std::lock_guard lock(State().mutex);
+    const auto* crt = RequireCertificate(function, sslCert);
+    const auto* name = subject ? &crt->subject : &crt->issuer;
+    auto certName = std::make_unique<CertName>();
+    for (const auto* node = name; node; node = node->next) {
+        if (!node->oid.p || node->oid.len == 0) continue;
+        std::string oid;
+        const char* shortName = nullptr;
+        if (mbedtls_oid_get_attr_short_name(&node->oid, &shortName) == 0 && shortName) {
+            oid = shortName;
+        } else {
+            char numeric[64] = {};
+            if (mbedtls_oid_get_numeric_string(numeric, sizeof(numeric), &node->oid) > 0) {
+                oid = numeric;
+            }
+        }
+        std::string value;
+        if (node->val.p && node->val.len > 0) {
+            value.assign(reinterpret_cast<const char*>(node->val.p), node->val.len);
+        }
+        certName->entries.push_back({std::move(oid), std::move(value)});
+    }
+    auto* handle = certName.get();
+    State().certNames.emplace(handle, std::move(certName));
+    return handle;
 }
 
 }
@@ -458,18 +536,27 @@ int APS5_VABI sceSslWrite(int sslConnectionId, void* buf, size_t len, int flags)
     return 0;
 }
 
-int APS5_VABI sceSslClose() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceSslGetSerialNumber() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceSslFreeSslCertName(void) {
+int APS5_VABI sceSslClose(int sslConnectionId) {
+    (void)sslConnectionId;
     NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceSslGetSerialNumber(void* sslCert, const char** sboData, unsigned int* sboLen) {
+    if (!sboData || !sboLen) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    const auto* crt = RequireCertificate(__func__, sslCert);
+    *sboData = reinterpret_cast<const char*>(crt->serial.p);
+    *sboLen = static_cast<unsigned int>(crt->serial.len);
+    return 0;
+}
+
+int APS5_VABI sceSslFreeSslCertName(void* certName) {
+    if (!certName) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    const auto found = State().certNames.find(certName);
+    if (found == State().certNames.end()) throw std::invalid_argument("sceSslFreeSslCertName: unknown cert name");
+    State().certNames.erase(found);
     return 0;
 }
 
@@ -493,29 +580,95 @@ int APS5_VABI sceSslSetMinSslVersion(void) {
     return 0;
 }
 
-int APS5_VABI sceSslGetIssuerName(void) {
-    NotImplemented_nid_no_patch(__func__);
+void* APS5_VABI sceSslGetIssuerName(void* sslCert) {
+    return ExtractCertName(__func__, sslCert, false);
+}
+
+int APS5_VABI sceSslGetNameEntryCount(void* certName) {
+    if (!certName) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    const auto found = State().certNames.find(certName);
+    if (found == State().certNames.end()) throw std::invalid_argument("sceSslGetNameEntryCount: unknown cert name");
+    return static_cast<int>(found->second->entries.size());
+}
+
+int APS5_VABI sceSslGetNameEntryInfo(void* certName, int entryNum, char* oidname, unsigned int maxOidnameLen,
+    char* value, unsigned int maxValueLen, unsigned int* valueLen) {
+    if (!certName) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    const auto found = State().certNames.find(certName);
+    if (found == State().certNames.end()) throw std::invalid_argument("sceSslGetNameEntryInfo: unknown cert name");
+    const auto& entries = found->second->entries;
+    if (entryNum < 0 || static_cast<std::size_t>(entryNum) >= entries.size()) return ErrorInvalidArg;
+    const auto& entry = entries[static_cast<std::size_t>(entryNum)];
+    if (oidname && maxOidnameLen > 0) {
+        const auto copyLen = std::min<std::size_t>(entry.oid.size(), maxOidnameLen - 1);
+        std::memcpy(oidname, entry.oid.data(), copyLen);
+        oidname[copyLen] = '\0';
+    }
+    if (value && maxValueLen > 0) {
+        const auto copyLen = std::min<std::size_t>(entry.value.size(), maxValueLen - 1);
+        std::memcpy(value, entry.value.data(), copyLen);
+        value[copyLen] = '\0';
+    }
+    if (valueLen) *valueLen = static_cast<unsigned int>(entry.value.size());
     return 0;
 }
 
-int APS5_VABI sceSslGetNameEntryCount(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslGetNotBefore(void* sslCert, SceSsl::RtcTick* begin) {
+    if (!begin) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    const auto* crt = RequireCertificate(__func__, sslCert);
+    begin->tick = TimeToTick(crt->valid_from);
     return 0;
 }
 
-int APS5_VABI sceSslGetNameEntryInfo(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslGetNotAfter(void* sslCert, SceSsl::RtcTick* limit) {
+    if (!limit) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    const auto* crt = RequireCertificate(__func__, sslCert);
+    limit->tick = TimeToTick(crt->valid_to);
     return 0;
 }
 
-int APS5_VABI sceSslGetPem(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslGetFingerprint(void* sslCert, int hashType, unsigned char* fingerprint) {
+    if (!fingerprint) return ErrorInvalidArg;
+    mbedtls_md_type_t mdType;
+    switch (hashType) {
+    case 0: mdType = MBEDTLS_MD_MD5; break;
+    case 1: mdType = MBEDTLS_MD_SHA1; break;
+    case 2: mdType = MBEDTLS_MD_SHA224; break;
+    case 3: mdType = MBEDTLS_MD_SHA256; break;
+    case 4: mdType = MBEDTLS_MD_SHA384; break;
+    case 5: mdType = MBEDTLS_MD_SHA512; break;
+    default: return ErrorInvalidArg;
+    }
+    const auto* info = mbedtls_md_info_from_type(mdType);
+    if (!info) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    const auto* crt = RequireCertificate(__func__, sslCert);
+    if (mbedtls_md(info, crt->raw.p, crt->raw.len, fingerprint) != 0) return ErrorInvalidArg;
     return 0;
 }
 
-int APS5_VABI sceSslGetSubjectName(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslGetPem(void* sslCert, char* buf, std::size_t maxBufLen, std::size_t* bufLen) {
+    if (!bufLen) return ErrorInvalidArg;
+    std::lock_guard lock(State().mutex);
+    Context* context = nullptr;
+    const auto* crt = RequireCertificate(__func__, sslCert, &context);
+    PoolScope scope(context->pool);
+    std::size_t required = 0;
+    const int ret = mbedtls_pem_write_buffer("-----BEGIN CERTIFICATE-----\n", "-----END CERTIFICATE-----\n",
+        crt->raw.p, crt->raw.len, reinterpret_cast<unsigned char*>(buf), maxBufLen, &required);
+    *bufLen = required;
+    if (!buf || maxBufLen == 0) return 0;
+    if (context->pool.exhausted || ret == MBEDTLS_ERR_PEM_ALLOC_FAILED) throw std::bad_alloc();
+    if (ret != 0) return ErrorInvalidArg;
     return 0;
+}
+
+void* APS5_VABI sceSslGetSubjectName(void* sslCert) {
+    return ExtractCertName(__func__, sslCert, true);
 }
 
 int APS5_VABI sceSslEnableVerifyOption(void) {
