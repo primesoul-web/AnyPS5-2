@@ -64,6 +64,19 @@ void SetHostImportWindow(std::uint64_t bytes);
 void SetHostImportRangeWindow(std::uint64_t bytes);
 void SetHostImportBudget(std::uint64_t bytes);
 std::uint64_t HostImportLiveBytes();
+// Dma-buf imports made at map time, by where they were first used on the GPU: at the map, deferred
+// to the queue worker because another thread held the GPU mutex, used by the worker later, or
+// retired before it got to them.
+struct MappedDmaBufTouchStats {
+    std::uint64_t atMap = 0;
+    std::uint64_t deferred = 0;
+    std::uint64_t byWorker = 0;
+    std::uint64_t dropped = 0;
+};
+MappedDmaBufTouchStats MappedDmaBufTouches();
+bool MappedDmaBufTouchPending();
+// Under the GPU mutex: uses the deferred imports on the GPU and waits for it.
+void TouchDeferredDmaBufImports(const Context& context);
 bool ImportMappedRanges(const Context& context, const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice);
 // Whether an existing import covers [address, address + bytes), without reconciling the imports
 // with the registry or making one (HostImportFor may take a registry lease): a hint for choices

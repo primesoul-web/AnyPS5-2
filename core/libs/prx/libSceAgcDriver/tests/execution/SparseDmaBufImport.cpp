@@ -10,6 +10,7 @@
 #include <unistd.h>
 #endif
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <thread>
 
 #ifdef _WIN32
 int main() {
@@ -115,13 +117,37 @@ int main() {
             return VulkanTestSkipped;
         }
 
+        auto* late = small + SmallBytes;
+        const auto beforeLate = AgcDriver::Graphics::MappedDmaBufTouches();
+        std::atomic<int> holder{0};
+        std::thread gpuHolder([&holder] {
+            std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+            holder.store(1);
+            while (holder.load() != 2) std::this_thread::yield();
+        });
+        while (holder.load() != 1) std::this_thread::yield();
+        device->ImportGuestMemory(Register(late, SmallBytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix(), false);
+        const auto held = AgcDriver::Graphics::MappedDmaBufTouches();
+        holder.store(2);
+        gpuHolder.join();
+        Require(Imported(device->Device(), reinterpret_cast<std::uint64_t>(late), static_cast<std::size_t>(SmallBytes)), "sparse import: the range mapped while another thread held the GPU lock was not imported");
+        Require(held.deferred == beforeLate.deferred + 1 && held.atMap == beforeLate.atMap && AgcDriver::Graphics::MappedDmaBufTouchPending(), "sparse import: the dma-buf import made while another thread held the GPU lock was not left for the queue worker");
+        {
+            std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+            device->TouchDeferredImports();
+        }
+        Require(AgcDriver::Graphics::MappedDmaBufTouches().byWorker == beforeLate.byWorker + 1 && !AgcDriver::Graphics::MappedDmaBufTouchPending(), "sparse import: the deferred dma-buf import was not used on the GPU under the GPU lock");
+        GuestAllocations::Mutation().Remove(late);
+
         const auto boundary = ChunkBytes;
         std::memset(mapping + boundary - 65536, 0x11, 131072);
         const auto ranges = Register(mapping, bytes);
         const auto address = reinterpret_cast<std::uint64_t>(mapping);
+        const auto touched = AgcDriver::Graphics::MappedDmaBufTouches().atMap;
         const bool atMap = device->ImportGuestMemory(ranges, GuestAllocations::GuestAllocationsGeneration_nid_postfix(), false);
         Require(Imported(device->Device(), address, static_cast<std::size_t>(bytes)), "sparse import: a range larger than udmabuf's size limit was not imported");
         Require(atMap, "sparse import: the import made without the GPU lock was refused");
+        Require(AgcDriver::Graphics::MappedDmaBufTouches().atMap == touched + 1, "sparse import: the dma-buf import made at map time was not used by the GPU before the map returned");
 
         bool filled = false;
         {
