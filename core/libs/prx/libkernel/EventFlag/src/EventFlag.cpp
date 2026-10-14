@@ -65,7 +65,9 @@ extern "C" {
 int APS5_VABI sceKernelCreateEventFlag(KernelEventFlag* ef, const char* name, uint32_t attr, uint64_t init_pattern, const void* param) {
     (void)param;
     if (!ef || !name) return SCE_KERNEL_ERROR_EINVAL;
-    if ((attr & EVF_ATTR_SINGLE) && (attr & EVF_ATTR_MULTI)) return SCE_KERNEL_ERROR_EINVAL;
+    const uint32_t waitAttr = attr & (EVF_ATTR_SINGLE | EVF_ATTR_MULTI);
+    if (waitAttr != EVF_ATTR_SINGLE && waitAttr != EVF_ATTR_MULTI) return SCE_KERNEL_ERROR_EINVAL;
+    if ((attr & ~(EVF_ATTR_SINGLE | EVF_ATTR_MULTI | 0x02u)) != 0) return SCE_KERNEL_ERROR_EINVAL;
     auto* flag = new (std::nothrow) KernelEventFlagPrivate();
     if (!flag) return SCE_KERNEL_ERROR_ENOMEM;
     flag->_name = name;
@@ -105,7 +107,7 @@ int APS5_VABI sceKernelClearEventFlag(KernelEventFlag ef, uint64_t bit_pattern) 
     if (!ef) return SCE_KERNEL_ERROR_ESRCH;
     std::lock_guard lock(ef->_mutex);
     if (ef->_deleted) return SCE_KERNEL_ERROR_ESRCH;
-    ef->_pattern &= bit_pattern;
+    ef->_pattern &= ~bit_pattern;
     return SCE_OK;
 }
 
