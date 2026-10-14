@@ -299,7 +299,11 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
             image.Bytes = std::move(converted.Bytes);
         }
         for (const auto& header : codeHeaders) {
-            const std::vector<std::uint8_t> code(image.Bytes.begin() + header.Offset, image.Bytes.begin() + header.Offset + header.FileSize);
+            if (header.Offset > image.Bytes.size() || header.FileSize > image.Bytes.size() - header.Offset)
+                throw Domain::RelinkerException("Guest executable segment exceeds image");
+            if (header.FileSize > std::numeric_limits<Domain::VirtualAddress>::max() - header.MappedAddress)
+                throw Domain::RelinkerException("Guest executable segment range exceeds address space");
+            const std::vector<std::uint8_t> code(image.Bytes.begin() + static_cast<std::ptrdiff_t>(header.Offset), image.Bytes.begin() + static_cast<std::ptrdiff_t>(header.Offset + header.FileSize));
             for (const auto offset : syscallScanner.ScanCodeSectionForSyscalls(code, header.MappedAddress, header.FileSize, Io::Utf8Path(image.SourcePath))) {
                 if (offset > code.size() || code.size() - offset < 2u)
                     throw Domain::RelinkerException("Syscall trap patch exceeds guest executable segment", header.MappedAddress + offset);
@@ -342,6 +346,7 @@ std::vector<GuestArtifact> GuestModuleBuilder::Build(const std::filesystem::path
         }
         std::vector<Domain::CallRegistryEntry> imports;
         for (const auto* table : {&image.Dynamic.RelaData, &image.Dynamic.RelaPltData}) {
+            if (table->size() % 24 != 0) throw Domain::RelinkerException("Invalid guest relocation table");
             for (std::size_t position = 0; position < table->size(); position += 24) {
                 const auto symbolIndex = static_cast<std::size_t>(Io::ReadU64(*table, position + 8) >> 32);
                 if (!systemImports[index].contains(symbolIndex)) continue;
