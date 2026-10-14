@@ -6,6 +6,9 @@
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
+#ifdef __APPLE__
+#include <dlfcn.h>
+#endif
 #include <mutex>
 #include <array>
 #include <chrono>
@@ -53,6 +56,10 @@ unsigned long long ModuleOffset(const void* address) {
     HMODULE module = nullptr;
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCSTR>(address), &module);
     return reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(module);
+#elif defined(__APPLE__)
+    Dl_info info{};
+    if (dladdr(address, &info) == 0 || info.dli_fbase == nullptr) return reinterpret_cast<std::uintptr_t>(address);
+    return reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(info.dli_fbase);
 #else
     return reinterpret_cast<std::uintptr_t>(address);
 #endif
