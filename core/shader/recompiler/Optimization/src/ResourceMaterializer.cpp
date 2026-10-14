@@ -103,6 +103,12 @@ RdnaImageDimension descriptorDimension(const DescriptorValue& descriptor, RdnaIm
     }
 }
 
+// A T# of type 0 or 1 names no image; on gfx1010 image_sample, image_load and image_get_resinfo through one return
+// zeros without a fault, as a null image does.
+bool nonImageDescriptor(const DescriptorValue& descriptor) {
+    return static_cast<std::uint32_t>(rawImageType(descriptor)) <= 1u;
+}
+
 bool validImageDescriptor(const DescriptorValue& descriptor, bool r128) {
     const auto type = rawImageType(descriptor);
     const auto format = rawImageFormat(descriptor);
@@ -508,7 +514,7 @@ void materializeSnapshot(const IrResourcePlan& plan, const SrtRuntime& runtime, 
             throw std::runtime_error("image descriptor has an invalid width");
         }
         const auto activity = plan.descriptorSources.size() + i;
-        if (activity < activeSources.size() && activeSources[activity] == 0u) {
+        if ((activity < activeSources.size() && activeSources[activity] == 0u) || nonImageDescriptor(descriptor)) {
             descriptor = DescriptorValue{};
             descriptor.dwordCount = 8u;
         }
