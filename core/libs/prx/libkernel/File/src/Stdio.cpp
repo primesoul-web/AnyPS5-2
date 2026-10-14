@@ -16,6 +16,8 @@
 #include "prx/libkernel/File/include/DescriptorControl.hpp"
 #include "prx/libkernel/File/include/FileLock.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
+#include "prx/libkernel/File/include/ArchivedFile.hpp"
+#include "prx/libc/include/AppArchive.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
@@ -40,6 +42,7 @@ struct KernelIovec {
     std::size_t length;
 };
 static_assert(sizeof(KernelIovec) == sizeof(GuestSockets::Iovec));
+static_assert(sizeof(KernelIovec) == sizeof(AppArchiveBuffer) && offsetof(KernelIovec, length) == offsetof(AppArchiveBuffer, Length));
 
 static constexpr int KERNEL_IOV_MAX = 1024;
 
@@ -642,6 +645,7 @@ int APS5_VABI dup2_nid_postfix(int from, int to) {
         if (GuestSockets::DuplicateTo(from, to) < 0) return -1;
         if (from == to) return to;
         File::ForgetRandomDevice(to);
+        File::ForgetArchivedFile(to);
 #ifdef _WIN32
         File::ForgetDirectoryDescriptor(to);
         File::ForgetFileLock(to);
@@ -803,6 +807,7 @@ int64_t APS5_VABI pread_nid_postfix(int d, void* buf, size_t nbytes, int64_t off
     const GuestArena::HostWrite destination(buf, nbytes);
     if (!destination.Open()) return PosixFailure(GUEST_EFAULT);
     if (File::ReadRandomDevice(d, buf, nbytes)) return static_cast<int64_t>(nbytes);
+    if (const auto archived = File::ReadArchivedFile(d, buf, nbytes, &offset)) return *archived;
     char empty = 0;
     const auto result = NativePread(d, buf == nullptr ? &empty : buf, nbytes, offset);
     return result < 0 ? PosixFailure(SceErrorFromErrno(errno) & 0xffff) : result;
@@ -873,8 +878,9 @@ int APS5_VABI sceKernelCheckReachability(const char* path) {
     if (*path == '\0') return SCE_KERNEL_ERROR_ENOENT;
     if (std::strlen(path) > 255) return SCE_KERNEL_ERROR_ENAMETOOLONG;
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, true)) return SceKernelError(error);
     native = File::PathOrRelinkedModule(native);
+    if (AppArchiveOnly_nid_no_patch(native)) return 0;
     std::error_code error;
     return std::filesystem::exists(native, error) ? 0 : SCE_KERNEL_ERROR_ENOENT;
 }
@@ -1037,6 +1043,7 @@ int64_t APS5_VABI sceKernelPread(int d, void* buf, size_t nbytes, int64_t offset
     const GuestArena::HostWrite destination(buf, nbytes);
     if (!destination.Open()) return SceErrorFromErrno(GUEST_EFAULT);
     if (File::ReadRandomDevice(d, buf, nbytes)) return static_cast<int64_t>(nbytes);
+    if (const auto archived = File::ReadArchivedFile(d, buf, nbytes, &offset)) return *archived;
     char empty = 0;
     const auto result = NativePread(d, nbytes == 0 && buf == nullptr ? &empty : buf, nbytes, offset);
     return result < 0 ? SceErrorFromErrno(errno) : result;
@@ -1072,6 +1079,9 @@ static std::int64_t TransferIovecs(int d, const KernelIovec* iov, int iovcnt, co
         return result < 0 ? SceKernelError(*__error_nid_postfix()) : result;
     }
     if (!write && File::IsRandomDevice(d)) return ReadRandomIovecs(d, iov, iovcnt);
+    if (!write) {
+        if (const auto archived = File::ReadArchivedIovecs(d, iov, iovcnt, offset)) return *archived;
+    }
     if (total == 0) {
         char none = 0;
         const auto result = offset != nullptr ? NativePositioned_nid_no_patch(d, &none, 0, *offset, write) : NativeTransfer(d, &none, 0, write);
@@ -1119,6 +1129,7 @@ int64_t APS5_VABI sceKernelPread(int d, void* buf, size_t nbytes, int64_t offset
     const GuestArena::HostWrite destination(buf, nbytes);
     if (!destination.Open()) return SceErrorFromErrno(GUEST_EFAULT);
     if (File::ReadRandomDevice(d, buf, nbytes)) return static_cast<int64_t>(nbytes);
+    if (const auto archived = File::ReadArchivedFile(d, buf, nbytes, &offset)) return *archived;
     const auto result = NativePread(d, buf, nbytes, offset);
     return result < 0 ? SceErrorFromErrno(errno) : result;
 }
@@ -1140,6 +1151,7 @@ int64_t APS5_VABI sceKernelReadv(int d, const KernelIovec* iov, int iovcnt) {
         return result < 0 ? SceKernelError(*__error_nid_postfix()) : result;
     }
     if (File::IsRandomDevice(d)) return ReadRandomIovecs(d, iov, iovcnt);
+    if (const auto archived = File::ReadArchivedIovecs(d, iov, iovcnt, nullptr)) return *archived;
     const auto result = static_cast<std::int64_t>(::readv(d, NativeIovecs(iov), iovcnt));
     return result < 0 ? SceErrorFromErrno(errno) : result;
 }
@@ -1163,6 +1175,7 @@ int64_t APS5_VABI sceKernelPreadv(int d, const KernelIovec* iov, int iovcnt, int
     std::deque<GuestArena::HostWrite> destinations;
     if (!OpenIovecs(iov, iovcnt, destinations)) return SceErrorFromErrno(GUEST_EFAULT);
     if (File::IsRandomDevice(d)) return ReadRandomIovecs(d, iov, iovcnt);
+    if (const auto archived = File::ReadArchivedIovecs(d, iov, iovcnt, &offset)) return *archived;
     const auto result = static_cast<std::int64_t>(::preadv(d, NativeIovecs(iov), iovcnt, static_cast<off_t>(offset)));
     return result < 0 ? SceErrorFromErrno(errno) : result;
 }

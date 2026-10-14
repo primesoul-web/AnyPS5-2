@@ -11,6 +11,7 @@
 #include "prx/libkernel/File/include/FileLock.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
+#include "prx/libkernel/File/include/ArchivedFile.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "SceTypes.hpp"
@@ -173,6 +174,12 @@ static int SceIoErrorFromErrno(int error) {
 }
 
 static int OpenNative(const std::filesystem::path& native, int flags, std::uint16_t mode) {
+    if (const auto archived = File::OpenArchivedFile(native, flags)) {
+        if (*archived < 0) return SceErrorFromErrno(-*archived);
+        File::RememberDescriptor(*archived, flags);
+        return *archived;
+    }
+    File::RefuseMergedDirectory(native);
 #ifdef _WIN32
     if ((flags & (SCE_KERNEL_O_DIRECTORY | SCE_KERNEL_O_CREAT)) == SCE_KERNEL_O_DIRECTORY) {
         std::error_code error;
@@ -220,7 +227,7 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
         return fd;
     }
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, true)) return SceKernelError(error);
     if ((flags & (SCE_KERNEL_O_ACCMODE | SCE_KERNEL_O_CREAT)) == SCE_KERNEL_O_RDONLY) native = File::PathOrRelinkedModule(native);
     return OpenNative(native, flags, mode);
 }
@@ -260,6 +267,7 @@ std::int64_t APS5_VABI sceKernelRead(int d, void* buf, std::size_t nbytes) {
     const GuestArena::HostWrite destination(buf, nbytes);
     if (!destination.Open()) errno = EFAULT;
     else if (File::ReadRandomDevice(d, buf, nbytes)) return static_cast<std::int64_t>(nbytes);
+    else if (const auto archived = File::ReadArchivedFile(d, buf, nbytes, nullptr)) return *archived;
     auto n = destination.Open() ? NativeRead(d, buf, nbytes) : -1;
     if (n < 0) return SceIoErrorFromErrno(errno);
     return static_cast<std::int64_t>(n);
@@ -283,6 +291,7 @@ std::int64_t APS5_VABI sceKernelLseek(int d, std::int64_t offset, int whence) {
     if (whence < 0 || whence > 2) {
         throw std::invalid_argument(std::string(__func__) + ": invalid whence=" + std::to_string(whence));
     }
+    if (const auto archived = File::SeekArchivedFile(d, offset, whence)) return *archived < 0 ? SceIoErrorFromErrno(-*archived) : *archived;
 #ifdef _WIN32
     if (const auto directory = File::SeekDirectoryDescriptor(d, offset, whence)) {
         if (*directory < 0) return SceIoErrorFromErrno(errno);
@@ -300,11 +309,18 @@ int APS5_VABI sceKernelStat(const char* path, FileStat* sb) {
     }
     if (*path == '\0') return SceErrorFromErrno(2);
     std::filesystem::path native;
-    if (const int error = ResolvePathError_nid_no_patch(path, native)) return SceKernelError(error);
+    if (const int error = ResolvePathError_nid_no_patch(path, native, true)) return SceKernelError(error);
     native = File::PathOrRelinkedModule(native);
     std::error_code error;
     constexpr int GuestEnotdir = 20;
     constexpr int GuestEfault = 14;
+    FileStat archived{};
+    if (File::FillArchivedStat(native, &archived)) {
+        if (std::string_view(path).back() == '/' && (archived.st_mode & 0170000) != 0040000) return SceErrorFromErrno(GuestEnotdir);
+        if (sb == nullptr) return SceErrorFromErrno(GuestEfault);
+        *sb = archived;
+        return 0;
+    }
     const auto status = std::filesystem::status(native, error);
     if (error == std::errc::not_a_directory) return SceErrorFromErrno(GuestEnotdir);
     if (!std::filesystem::exists(status)) {
