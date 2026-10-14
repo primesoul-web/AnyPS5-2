@@ -605,7 +605,7 @@ std::vector<ShadowRun> ShadowSources(const Context& context, const HostImport& i
     std::vector<ShadowRun> result;
     if (runs.empty()) return result;
     const auto importPiece = [&](std::uint64_t begin, std::uint64_t end) {
-        result.push_back({begin, end, import.buffer, surfaceBase + begin - import.base, false, nullptr});
+        result.push_back({begin, end, import.buffer, HostImportOffset(import, surfaceBase + begin), false, nullptr});
         if (countReads) Stats().detiledImportBytes.fetch_add(end - begin, std::memory_order_relaxed);
     };
     std::shared_ptr<UnitShadow> shadow;
@@ -667,7 +667,7 @@ std::vector<ShadowRun> ShadowSources(const Context& context, const HostImport& i
                 slab->lastUse = present;
                 result.push_back({pieceBegin, pieceEnd, slab->buffer, SlabOffset(import, *slab, surfaceBase + pieceBegin), true, slab});
             } else {
-                result.push_back({pieceBegin, pieceEnd, import.buffer, surfaceBase + pieceBegin - import.base, false, nullptr});
+                result.push_back({pieceBegin, pieceEnd, import.buffer, HostImportOffset(import, surfaceBase + pieceBegin), false, nullptr});
             }
             (isFresh ? shadowBytes : importBytes) += pieceEnd - pieceBegin;
         }

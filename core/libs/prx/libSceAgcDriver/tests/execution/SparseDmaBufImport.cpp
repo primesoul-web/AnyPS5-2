@@ -137,8 +137,30 @@ int main() {
             Require(value == 0x5EEDF00Du, "sparse import: the GPU fill did not reach the backing memory across the chunk boundary");
         }
         Require(mapping[boundary - 32769] == 0x11 && mapping[boundary + 32768] == 0x11, "sparse import: the GPU fill reached past its range");
-
         GuestAllocations::Mutation().Remove(mapping);
+
+        constexpr std::uint64_t Lead = 16384;
+        auto* unaligned = mapping + Lead;
+        const auto unalignedBytes = bytes - 65536;
+        std::memset(mapping + boundary - 65536, 0x22, 131072);
+        const auto unalignedAddress = reinterpret_cast<std::uint64_t>(unaligned);
+        device->ImportGuestMemory(Register(unaligned, unalignedBytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix(), false);
+        Require(Imported(device->Device(), unalignedAddress, static_cast<std::size_t>(unalignedBytes)), "sparse import: a range whose backing offset is not 64 KiB aligned was not imported");
+        {
+            std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+            const std::array<std::uint32_t, 4> pattern{0xA11CE5EDu, 0xA11CE5EDu, 0xA11CE5EDu, 0xA11CE5EDu};
+            filled = device->FillBuffer(address + boundary - 32768, 65536, pattern);
+            device->WaitIdle();
+        }
+        Require(filled, "sparse import: the fill across the chunk boundary of the unaligned range was not served by the import");
+        for (std::uint64_t offset = boundary - 32768; offset < boundary + 32768; offset += 4) {
+            std::uint32_t value = 0;
+            std::memcpy(&value, mapping + offset, sizeof(value));
+            Require(value == 0xA11CE5EDu, "sparse import: the GPU fill of the unaligned range missed its guest address");
+        }
+        Require(mapping[boundary - 32769] == 0x22 && mapping[boundary + 32768] == 0x22, "sparse import: the GPU fill of the unaligned range reached past its range");
+        GuestAllocations::Mutation().Remove(unaligned);
+
         GuestAllocations::Mutation().Remove(probe);
         std::free(probe);
         std::cout << "AGC sparse dma-buf import tests passed\n";

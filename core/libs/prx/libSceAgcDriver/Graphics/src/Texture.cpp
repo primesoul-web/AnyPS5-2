@@ -2293,7 +2293,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
             batch = std::make_unique<CommandBatch>(context);
             commands = batch->Handle();
         }
-        const auto importOffset = descriptor.baseAddress - import->base;
+        const auto importOffset = HostImportOffset(*import, descriptor.baseAddress);
         if (direct) {
             recordDirectUploadBarrier(commands, layers == nullptr);
             for (std::uint32_t layer = 0; layer < arrayLayers; ++layer) {
@@ -2671,7 +2671,7 @@ std::uint64_t StorageTexture::uploadWindows(const HostImport& import, std::span<
         batch = std::make_unique<CommandBatch>(context);
         commands = batch->Handle();
     }
-    const auto importOffset = descriptor.baseAddress - import.base;
+    const auto importOffset = HostImportOffset(import, descriptor.baseAddress);
     if (direct) {
         recordDirectUploadBarrier(commands, discard);
         for (const auto& window : windows) {
@@ -2793,7 +2793,7 @@ std::uint64_t StorageTexture::writeBackWindows(const HostImport& import, std::sp
                 if (!shadowed.empty() && shadowed.back().end == guestBegin && shadowed.back().slab == destination->slab) shadowed.back().end = pieceEnd;
                 else shadowed.push_back({guestBegin, pieceEnd, destination->slab});
             } else {
-                importCopies.push_back({scratchOffset, guestBegin - import.base, pieceEnd - guestBegin});
+                importCopies.push_back({scratchOffset, HostImportOffset(import, guestBegin), pieceEnd - guestBegin});
                 if (!imported.empty() && imported.back().second == guestBegin) imported.back().second = pieceEnd;
                 else imported.emplace_back(guestBegin, pieceEnd);
             }
@@ -2884,7 +2884,7 @@ std::uint64_t StorageTexture::writeBackWindows(const HostImport& import, std::sp
         }
         for (const auto& [begin, end, slab] : seeds) {
             // The piece's own slab (a seeded unit is one the piece covers partly).
-            const VkBufferCopy seed{begin - import.base, SlabOffset(import, *slab, begin), end - begin};
+            const VkBufferCopy seed{HostImportOffset(import, begin), SlabOffset(import, *slab, begin), end - begin};
             context.Resolved(&DeviceFunctions::cmdCopyBuffer, "vkCmdCopyBuffer")(commands, import.buffer, slab->buffer, 1, &seed);
             NoteShadowSeed(begin, end);
         }
@@ -4505,7 +4505,7 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             batch = std::make_unique<CommandBatch>(context);
             commands = batch->Handle();
         }
-        const auto importOffset = descriptor.baseAddress - import->base;
+        const auto importOffset = HostImportOffset(*import, descriptor.baseAddress);
         // The tracked layers are the array layers when there are several; one tracked layer means
         // the whole surface.
         const auto* storedLayers = trackedLayers == arrayLayers && trackedLayers > 1 ? &layers : nullptr;
