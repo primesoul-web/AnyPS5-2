@@ -80,6 +80,7 @@ void CheckProfile() {
     invalid([](auto& value) { value.bda.bufferDeviceAddress = VK_FALSE; }, "bufferDeviceAddress");
     invalid([](auto& value) { value.device.pNext = nullptr; }, "bufferDeviceAddress");
     invalid([](auto& value) { value.core.shaderInt64 = VK_FALSE; }, "shaderInt64");
+    invalid([](auto& value) { value.capabilities.push_back(spv::CapabilityGeometry); }, "geometryShader");
     invalid([](auto& value) { value.bytes.storageBuffer8BitAccess = VK_FALSE; }, "storageBuffer8BitAccess");
     ProfileInput withoutNull;
     withoutNull.robustness.nullDescriptor = VK_FALSE;
@@ -106,6 +107,11 @@ void CheckProfile() {
     enabled.indexing.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
     const AgcDriver::ShaderDeviceProfile accepted(enabled.Target(), enabled.device, enabled.limits);
     Require(accepted.Target().supportedCapabilities.size() == 6u, "enabled descriptor indexing was rejected");
+    ProfileInput geometryEnabled;
+    geometryEnabled.capabilities.push_back(spv::CapabilityGeometry);
+    geometryEnabled.core.geometryShader = VK_TRUE;
+    const AgcDriver::ShaderDeviceProfile geometryAccepted(geometryEnabled.Target(), geometryEnabled.device, geometryEnabled.limits);
+    Require(std::ranges::find(geometryAccepted.Target().supportedCapabilities, spv::CapabilityGeometry) != geometryAccepted.Target().supportedCapabilities.end(), "enabled geometry shaders were rejected");
 }
 
 void CheckAbi() {
