@@ -10,6 +10,9 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_target(agc_color_transfer_header DEPENDS "${agcColorTransferHeader}")
+add_dependencies(agc_shader_headers agc_color_transfer_header)
+
 foreach(agcTarget IN ITEMS libSceAgcDriver agc_driver_visual_test)
     if(TARGET ${agcTarget})
         target_sources(${agcTarget} PRIVATE Graphics/src/BufferPool.cpp)
@@ -28,8 +31,10 @@ foreach(agcTarget IN ITEMS libSceAgcDriver agc_driver_visual_test)
     endif()
 endforeach()
 
-target_sources(agc_driver_bda_device_tests PRIVATE tests/ColorTransferTests.cpp)
-target_include_directories(agc_driver_bda_device_tests PRIVATE ${agcTextureDetileGeneratedRoot})
+if(TARGET agc_driver_bda_device_tests)
+    target_sources(agc_driver_bda_device_tests PRIVATE tests/ColorTransferTests.cpp)
+    target_include_directories(agc_driver_bda_device_tests PRIVATE ${agcTextureDetileGeneratedRoot})
+endif()
 
 if(TARGET agc_driver_visual_test)
     target_sources(agc_driver_visual_test PRIVATE Execution/src/DisplayBuffer.cpp)

@@ -1,5 +1,6 @@
 # Project technical debt
 
+- Native AOT integer and SIMD semantics follow [Intel SDM Volume 2](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), with [x86-64 SysV ABI](https://gitlab.com/x86-psABIs/x86-64-ABI) to [Apple ARM64 ABI](https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms) reconstruction. The floating-point profile requires nearest-even rounding, preserved subnormals, masked exceptions and unobserved status flags/NaN payloads; FPCR is checked at entry. Division and aligned-access violations trap instead of reproducing guest exception delivery. Native tests and Rosetta SSE references do not qualify PS5 hardware behavior; AVX2 has independent integer-oracle tests but no x86 AVX2 execution oracle.
 Entries about one library or component are in [debt](debt/), one file per library or component, under the same sections as this page. Entries that belong to none stay here.
 
 ### Build
@@ -27,3 +28,22 @@ Throughout the project, every function at every stage either **does exactly what
 
 - [Cancellation coverage](ARCHITECTURE.md#thread-cancellation) checks deferred request handling and recovery, not full asynchronous support or console ABI compatibility. Cancellation during file/socket I/O, sleep interruption, cancellation versus exit/detach, condition signal conservation under cancellation, and safe rejection of non-null invalid or reclaimed thread handles remain unverified. No console title or homebrew establishes the cleanup NIDs or buffer layout. Accepted asynchronous mode currently has no diagnostic for its deferred behavior.
 - `--to-intel` guest module trampolines are covered only by a synthetic relinker test; no game title has been verified with them on Linux or Windows.
+- The macOS relinker fixtures use GNU cleanup and TLS-model attributes through standard attribute syntax. C cleanup must exercise `__gcc_personality_v0`, and the initial-exec TLS access must retain that relocation model; replacing these with C++ RAII or default TLS would change the behavior under test.
+- The optional native ARM64 graphics target is qualified only for the pinned source-built `gpu_cube` variant documented in [BUILD](BUILD.md#source-built-native-arm64-graphics-fixture). Its explicit pointer/layout and provider-effect contracts are tied to the reconstructed ELF hash. Mapping guards check readability, not object identity, bounds, ownership or asynchronous lifetime. Native graphics does not provide a complete game runtime, x86 exception restoration, x87/variadic formatting or arbitrary module loading. The Apple write-changed path uses byte-selective native stores where x86 uses SSE masks. No game compatibility or speedup is established.
+- The checked graphics AOT profile is under qualification. Native mapping guards do not prove object type, ownership, lifetime, asynchronous stability or relocation of arbitrary guest integer addresses. Output/layout assertions need matched source evidence; internal bounded outputs and frame exclusions are enforced natively. Full current-base graphics execution and multi-frame comparison are still required before compatibility claims.
+- Native AOT integer and SIMD semantics follow [Intel SDM Volume 2](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), with [x86-64 SysV ABI](https://gitlab.com/x86-psABIs/x86-64-ABI) to [Apple ARM64 ABI](https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms) reconstruction. The floating-point profile requires nearest-even rounding, preserved subnormals, masked exceptions and unobserved status flags/NaN payloads; FPCR is checked at entry. Division and aligned-access violations trap instead of reproducing guest exception delivery. Native tests and Rosetta SSE references do not qualify PS5 hardware behavior; AVX2 has independent integer-oracle tests but no x86 AVX2 execution oracle.
+- On macOS (MoltenVK on an Apple GPU), 16 AGC tests fail on hardware limits:
+  - Metal has no 64-bit floats (the 7 agc_driver_f64_* tests and agc_driver_division_result_modifiers);
+
+  - it has no 64-bit atomics (agc_driver_buffer_atomics*, agc_driver_global_atomics64, agc_driver_global_atomics_float, agc_driver_global_atomics_lanes);
+
+  - MoltenVK offers no VK_KHR_shader_clock (agc_driver_shader_clock).
+
+- agc_driver_sdwa_float_selectors fails on macOS: an f16 multiply that should give -0.0 gives +0.0. In isolation, Metal keeps the sign through each step of the same chain (half to float, multiply, the software float-to-half conversion). The cause, found on an M1 Pro: SPIRV-Cross's MSL backend computes a precise multiplication as `fma(l, r, 0)`, which turns a -0.0 product into +0.0. A fix is submitted as KhronosGroup/SPIRV-Cross#2704; it reaches this project when MoltenVK takes that SPIRV-Cross.
+  - ordered not-equal is emitted as an unordered not-equal and two NaN tests on the bits, because SPIRV-Cross writes OpFOrdNotEqual as `!=`;
+
+  - NaN tests read the bits;
+
+  - an image atomic comes after an image-memory barrier, because Metal shows an invocation's earlier image stores to its atomics only after a texture fence;
+
+  - subgroup results pass through a Private variable, so that SPIRV-Cross does not move them into `?:`, `&&` or `||`, where only some lanes would run them.
