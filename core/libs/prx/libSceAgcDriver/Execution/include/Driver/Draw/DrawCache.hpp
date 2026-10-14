@@ -95,6 +95,7 @@ struct StageCapture {
     std::vector<ShaderRecompiler::MemoryRegion> regions;
     std::uint64_t forgetSerial = 0;
     std::uint32_t pushOffset = 0;
+    std::uint64_t userDataMask = ~std::uint64_t{0};
 };
 
 bool DecodeProgramsCurrent(const DrawDecode& decode, const ShaderRegistry& registry);

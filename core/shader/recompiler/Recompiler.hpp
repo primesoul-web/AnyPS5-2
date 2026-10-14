@@ -517,6 +517,7 @@ struct ShaderInvocation {
     std::vector<DescriptorBinding> bindings;
     std::vector<std::byte> pushConstants;
     std::vector<VertexAttribute> vertexAttributes;
+    std::uint64_t userDataRegisterReads = 0;
     std::uint32_t poisonedSrtReads = 0;
 };
 

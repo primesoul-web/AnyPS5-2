@@ -75,8 +75,8 @@ namespace ShaderRecompiler::ShaderDiskCache {
 
 #if defined(__linux__) && defined(__x86_64__) && defined(__GLIBCXX__)
 static_assert(sizeof(CompiledShaderArtifact) == 200, "CompiledShaderArtifact changed: update the artifact encoder");
-static_assert(sizeof(ShaderInvocation) == 112, "ShaderInvocation changed: update the invocation encoder");
-static_assert(sizeof(RecompileResult) == 320, "RecompileResult changed: update EncodeResult and DecodeResult");
+static_assert(sizeof(ShaderInvocation) == 120, "ShaderInvocation changed: update the invocation encoder");
+static_assert(sizeof(RecompileResult) == 328, "RecompileResult changed: update EncodeResult and DecodeResult");
 static_assert(sizeof(DescriptorBinding) == 568, "DescriptorBinding changed: update the binding encoder");
 static_assert(sizeof(VertexAttribute) == 32, "VertexAttribute changed: update the attribute encoder");
 static_assert(sizeof(VertexInput) == 16, "VertexInput changed: update the vertex input encoder");
@@ -401,6 +401,7 @@ void encodeInvocation(Writer& writer, const ShaderInvocation& invocation) {
         out.Value(attribute.formatComponents);
     });
     writer.Value(invocation.poisonedSrtReads);
+    writer.Value(invocation.userDataRegisterReads);
 }
 
 void decodeInvocation(Reader& reader, ShaderInvocation& invocation) {
@@ -422,6 +423,7 @@ void decodeInvocation(Reader& reader, ShaderInvocation& invocation) {
         in.Value(attribute.formatComponents);
     });
     reader.Value(invocation.poisonedSrtReads);
+    reader.Value(invocation.userDataRegisterReads);
 }
 
 void encodeLayout(Writer& writer, const IrBindingLayout& layout) {

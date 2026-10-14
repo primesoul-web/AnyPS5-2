@@ -39,6 +39,7 @@ struct DispatchVariant {
     std::uint32_t flatBinding = NoFlatBinding;
 
     std::uint32_t pushOffset = 0;
+    std::uint64_t userDataMask = ~std::uint64_t{0};
     std::shared_ptr<const ShaderRecompiler::ShaderVertexStageInfo> vertexInfo;
 
     std::shared_ptr<ShaderMemory> memory;

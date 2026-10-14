@@ -75,6 +75,14 @@ ShaderRecompiler::RecompileResult Driver::materializeDrawStage(std::size_t i, st
     timing.Mark("capture_resources");
     stageCapture.compiled = invocation.Materialize(*capture);
     timing.Mark("materialize");
+    const auto walked = shaderMemory.LastUserDataReads();
+    auto mask = walked == 0 ? ~std::uint64_t{0} : walked | stageCapture.compiled->userDataRegisterReads;
+    if (vertexInfos[i]) {
+        for (const auto reg : {static_cast<std::uint32_t>(vertexInfos[i]->fetchAttribReg), static_cast<std::uint32_t>(vertexInfos[i]->fetchBufferReg)}) {
+            mask |= reg + 1u < 64u ? std::uint64_t{3} << reg : ~std::uint64_t{0};
+        }
+    }
+    stageCapture.userDataMask = mask;
     ShaderRecompiler::RecompileResult result = *stageCapture.compiled;
     phaseTiming.Phase(DrawRowRecompile);
     return result;
@@ -96,6 +104,7 @@ void Driver::cacheDrawStages(bool useDrawEntries, bool drawHit, const Pm4::DrawP
             variant->shader = programs[i].snapshot;
             variant->forgetSerial = stageCapture.forgetSerial;
             variant->pushOffset = stageCapture.pushOffset;
+            variant->userDataMask = stageCapture.userDataMask;
             if (vertexInfos[i]) variant->vertexInfo = std::make_shared<const ShaderRecompiler::ShaderVertexStageInfo>(*vertexInfos[i]);
 
             std::vector<ShaderRecompiler::MemoryRegion> regions(stageCapture.regions.begin(), stageCapture.regions.end());
