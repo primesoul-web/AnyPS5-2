@@ -10,6 +10,8 @@ namespace ShaderRecompiler {
 
 class ConstantFolder {
 public:
+    explicit constexpr ConstantFolder(std::uint32_t vertexHostSubgroupSize = 0) : vertexHostSubgroupSize(vertexHostSubgroupSize) {}
+
     void Fold(IrProgram& program) const;
 
     void Fold(IrProgram& program, std::span<IrBlock* const> blocks) const;
@@ -17,6 +19,8 @@ public:
     [[nodiscard]] bool ComposePackedAncillary(IrProgram& program) const;
 
 private:
+    std::uint32_t vertexHostSubgroupSize;
+
     [[nodiscard]] bool tryFoldValue(IrProgram& program, IrValue& value) const;
 };
 
