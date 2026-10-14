@@ -6,12 +6,23 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 namespace AgcDriver::DriverDetail {
 
 namespace {
 
 constexpr std::array<const char*, static_cast<std::size_t>(DrawPipeline::DrainReason::Count)> DrainNames{"packet", "flush", "labels", "capture", "indirect", "submission"};
+
+std::chrono::microseconds spinBeforeSleep() {
+    static const auto spin = [] {
+        const char* text = std::getenv("APS5_PIPELINE_SPIN_US");
+        return std::chrono::microseconds(text != nullptr ? std::strtoull(text, nullptr, 10) : 50);
+    }();
+    return spin;
+}
 
 std::uint64_t elapsedNs(std::chrono::steady_clock::time_point since) {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - since).count());
@@ -110,6 +121,15 @@ void DrawPipeline::report(std::chrono::steady_clock::time_point now) {
 void DrawPipeline::run() {
     for (;;) {
         Commit* commit = nullptr;
+        if (const auto spin = spinBeforeSleep(); spin.count() != 0 && outstanding.load(std::memory_order_acquire) == 0) {
+            const auto until = std::chrono::steady_clock::now() + spin;
+            for (std::uint32_t polls = 1; outstanding.load(std::memory_order_acquire) == 0; ++polls) {
+#if defined(__x86_64__) || defined(_M_X64)
+                _mm_pause();
+#endif
+                if ((polls & 63u) == 0 && std::chrono::steady_clock::now() >= until) break;
+            }
+        }
         {
             std::unique_lock lock(mutex);
             committerWaiting = true;
