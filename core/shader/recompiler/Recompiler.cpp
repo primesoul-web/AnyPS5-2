@@ -217,7 +217,7 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
     };
 
     constexpr SsaBuilder ssaBuilder;
-    constexpr ConstantFolder constantFolder;
+    const ConstantFolder constantFolder(inputInfo.vertex ? inputInfo.vertex->hostSubgroupSize : 0u);
     constexpr DeadCodeEliminator deadCodeEliminator;
     constexpr ReadLaneEliminator readLaneEliminator;
     constexpr MaskedSelectEliminator maskedSelectEliminator;

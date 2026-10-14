@@ -8,6 +8,7 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/linux/DlIteratePhdr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/macos/GuestImages.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Strings.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/StringLength.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AllocatingStrings.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WideConversion.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Multibyte.cpp
@@ -58,6 +59,10 @@ target_include_directories(libc PRIVATE
 
 if(WIN32)
     target_link_libraries(libc PRIVATE advapi32 ws2_32 iphlpapi)
+endif()
+
+if(ANYPS5_NATIVE_GRAPHICS)
+    return()
 endif()
 
 if(BUILD_TESTING)
@@ -531,10 +536,6 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     if(UNIX)
-        add_test_executable(exception_runtime_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionRuntime.cpp)
-        target_include_directories(exception_runtime_tests PRIVATE ${LIBS_INCLUDE_DIR})
-        target_link_libraries(exception_runtime_tests PRIVATE libc)
-        add_test(NAME exception_runtime COMMAND exception_runtime_tests)
         add_test_executable(exception_personality_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionPersonality.cpp)
         target_include_directories(exception_personality_tests PRIVATE ${LIBS_INCLUDE_DIR})
         target_link_libraries(exception_personality_tests PRIVATE libc)
@@ -544,6 +545,10 @@ if(BUILD_TESTING)
         target_link_libraries(guest_exit_order_tests PRIVATE libc)
         add_test(NAME guest_exit_order COMMAND guest_exit_order_tests)
         if(NOT APPLE)
+            add_test_executable(exception_runtime_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionRuntime.cpp)
+            target_include_directories(exception_runtime_tests PRIVATE ${LIBS_INCLUDE_DIR})
+            target_link_libraries(exception_runtime_tests PRIVATE libc)
+            add_test(NAME exception_runtime COMMAND exception_runtime_tests)
             enable_language(C)
             add_test_executable(exception_c_cleanup_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionCCleanup.cpp ${LIBS_INCLUDE_DIR}/tests/ExceptionCCleanup.c)
             set_source_files_properties(${LIBS_INCLUDE_DIR}/tests/ExceptionCCleanup.c PROPERTIES COMPILE_OPTIONS -fexceptions)

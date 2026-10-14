@@ -19,6 +19,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
 #else
 #include <dlfcn.h>
 #include <link.h>
@@ -62,6 +65,7 @@ void* Symbol(Module& module, const char* name) {
 #endif
 }
 #ifndef _WIN32
+#ifndef __APPLE__
 const link_map* MainProgramMap() {
     static const link_map* const map = [] {
         void* handle = ::dlopen(nullptr, RTLD_LAZY);
@@ -73,12 +77,18 @@ const link_map* MainProgramMap() {
     }();
     return map;
 }
+#endif
 
 bool FromGuestModule(void* address) {
     Dl_info info{};
+#ifdef __APPLE__
+    if (address == nullptr || !::dladdr(address, &info) || info.dli_fname == nullptr) return false;
+    if (info.dli_fbase == reinterpret_cast<const void*>(_dyld_get_image_header(0))) return true;
+#else
     link_map* image = nullptr;
     if (address == nullptr || !::dladdr1(address, &info, reinterpret_cast<void**>(&image), RTLD_DL_LINKMAP) || info.dli_fname == nullptr || image == nullptr) return false;
     if (image == MainProgramMap()) return true;
+#endif
     const std::string path(info.dli_fname);
     return path.ends_with(".prx");
 }

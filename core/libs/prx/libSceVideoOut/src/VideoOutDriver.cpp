@@ -5,11 +5,13 @@
 #include <exception>
 #include <thread>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
 #include "SDL.h"
 #include "SDL_vulkan.h"
+#include "prx/libSceVideoOut/include/MainThread.hpp"
 #include "prx/libSceVideoOut/include/PadInput.hpp"
 #include "prx/libSceVideoOut/include/MouseInput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/AspectFit.hpp"
@@ -23,6 +25,7 @@
 #include "prx/libSceVideoOut/include/FrameTimingLog.hpp"
 #endif
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
+#include "prx/libSceAgcDriver/Execution/include/CaptureTrace.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Presentation.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Dcb.hpp"
@@ -39,31 +42,37 @@ void require(bool condition, const char* reason) {
 }
 
 std::vector<const char*> windowExtensions(SDL_Window* window) {
-    unsigned extensionCount = 0;
-    if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, nullptr)) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
-    std::vector<const char*> extensions(extensionCount);
-    if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, extensions.data())) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
-    extensions.resize(extensionCount);
-    return extensions;
+    return OnMainThread([&] {
+        unsigned extensionCount = 0;
+        if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, nullptr)) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+        std::vector<const char*> extensions(extensionCount);
+        if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, extensions.data())) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+        extensions.resize(extensionCount);
+        return extensions;
+    });
 }
 
 VkSurfaceKHR createWindowSurface(void* context, VkInstance instance) {
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (!SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(context), instance, &surface)) throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + SDL_GetError());
-    return surface;
+    return OnMainThread([&] {
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        if (!SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(context), instance, &surface)) throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + SDL_GetError());
+        return surface;
+    });
 }
 
 void windowDrawableSize(void* context, std::uint32_t* width, std::uint32_t* height) {
-    if ((SDL_GetWindowFlags(static_cast<SDL_Window*>(context)) & SDL_WINDOW_MINIMIZED) != 0) {
-        *width = 0;
-        *height = 0;
-        return;
-    }
-    int drawableWidth = 0;
-    int drawableHeight = 0;
-    SDL_Vulkan_GetDrawableSize(static_cast<SDL_Window*>(context), &drawableWidth, &drawableHeight);
-    *width = drawableWidth > 0 ? static_cast<std::uint32_t>(drawableWidth) : 0;
-    *height = drawableHeight > 0 ? static_cast<std::uint32_t>(drawableHeight) : 0;
+    OnMainThread([&] {
+        if ((SDL_GetWindowFlags(static_cast<SDL_Window*>(context)) & SDL_WINDOW_MINIMIZED) != 0) {
+            *width = 0;
+            *height = 0;
+            return;
+        }
+        int drawableWidth = 0;
+        int drawableHeight = 0;
+        SDL_Vulkan_GetDrawableSize(static_cast<SDL_Window*>(context), &drawableWidth, &drawableHeight);
+        *width = drawableWidth > 0 ? static_cast<std::uint32_t>(drawableWidth) : 0;
+        *height = drawableHeight > 0 ? static_cast<std::uint32_t>(drawableHeight) : 0;
+    });
 }
 
 void checkConfig(const VideoOutConfig& cfg) {
@@ -259,16 +268,18 @@ VideoOutDriver& VideoOutDriver::Get() {
 }
 
 VideoOutDriver::VideoOutDriver() {
-    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    OnMainThread([] {
+        SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
 #ifdef _WIN32
-    SDL_SetHintWithPriority(SDL_HINT_DIRECTINPUT_ENABLED, "0", SDL_HINT_DEFAULT);
+        SDL_SetHintWithPriority(SDL_HINT_DIRECTINPUT_ENABLED, "0", SDL_HINT_DEFAULT);
 #endif
 #ifdef __linux__
-    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
+        SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
 #endif
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
-        throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
-    }
+        if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+            throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
+        }
+    });
     try {
         AgcDriverWaitIdle_nid_postfix();
         std::promise<void> started;
@@ -296,7 +307,7 @@ VideoOutDriver::VideoOutDriver() {
             flipQueue->changed.NotifyAll();
             presentThread.join();
         }
-        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER);
+        OnMainThread([] { SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER); });
         throw;
     }
 }
@@ -325,7 +336,7 @@ void VideoOutDriver::Shutdown() {
             if (outputs[handle]) close(handle);
         }
     }
-    SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER);
+    OnMainThread([] { SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER); });
     stopped = true;
     std::lock_guard lock(flipQueue->mutex);
     if (flipQueue->failure) std::rethrow_exception(flipQueue->failure);
@@ -526,7 +537,7 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
             req.gpuComplete = true;
         }
     } else {
-        window.Ensure(req.width, req.height);
+        OnMainThread([&] { window.Ensure(req.width, req.height); });
         const auto extensions = windowExtensions(window.Handle());
         const AgcDriver::PresentationWindow target{window.Handle(), extensions, &createWindowSurface, &windowDrawableSize, req.width, req.height, req.timing};
         timing.Mark("window_prepare");
@@ -546,7 +557,7 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
             AgcDriverPresentClear_nid_postfix(target, req.unregistered || req.index == VIDEO_OUT_BUFFER_INDEX_BLACK, gpuReady, &req);
         }
         timing.Mark("present");
-        window.UpdateTitle();
+        OnMainThread([&] { window.UpdateTitle(); });
         timing.Mark("window_title");
     }
     std::lock_guard lock(req.cfg->mutex);
@@ -561,6 +572,7 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
     require(req.cfg->flipStatus.count != std::numeric_limits<uint64_t>::max(), "flip counter overflow");
     triggerEvents(*req.cfg, VIDEO_OUT_EVENT_FLIP, reinterpret_cast<void*>(req.flipArg));
     ++req.cfg->flipStatus.count;
+    AgcDriver::CaptureTrace::Log("display-flip-complete output=%u buffer=%d argument=%lld", req.outputHandle, req.index, static_cast<long long>(req.flipArg));
     req.cfg->flipStatus.processTime = sceKernelGetProcessTime();
     req.cfg->flipStatus.processTimeCounter = sceKernelGetProcessTimeCounter();
     req.cfg->flipStatus.flipArg = req.flipArg;
@@ -580,17 +592,23 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
 
 void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& started) {
     try {
-        window.Ensure(VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT);
-        updateDisplayRefreshRate();
+        OnMainThread([&] {
+            window.Ensure(VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT);
+            updateDisplayRefreshRate();
+        });
         const auto extensions = windowExtensions(window.Handle());
         AgcDriverAttachWindow_nid_postfix({window.Handle(), extensions, &createWindowSurface, &windowDrawableSize, VIDEO_OUT_DEFAULT_WIDTH, VIDEO_OUT_DEFAULT_HEIGHT, nullptr});
     } catch (...) {
-        window.Destroy();
+        OnMainThread([&] { window.Destroy(); });
         started.set_exception(std::current_exception());
         return;
     }
     started.set_value();
     std::shared_ptr<FlipRequest> current;
+    std::optional<PadInput> padInput;
+    std::optional<MouseInput> mouseInput;
+    std::optional<KeyboardInput> keyboardInput;
+    std::optional<ImeTextInput> imeTextInput;
 #if APS5_ENABLE_TIMING_LOG
     std::unique_ptr<FrameTimingLog> timingLog;
 #endif
@@ -598,10 +616,12 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
 #if APS5_ENABLE_TIMING_LOG
         timingLog = std::make_unique<FrameTimingLog>();
 #endif
-        PadInput padInput;
-        MouseInput mouseInput;
-        KeyboardInput keyboardInput;
-        ImeTextInput imeTextInput;
+        OnMainThread([&] {
+            padInput.emplace();
+            mouseInput.emplace();
+            keyboardInput.emplace();
+            imeTextInput.emplace();
+        });
         while (!token.stop_requested()) {
             {
                 std::unique_lock lock(flipQueue->mutex);
@@ -614,34 +634,42 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
                 }
             }
 
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_QUIT) {
-                    LibcRequestExit_nid_postfix(0);
-                    throw ProcessShutdown{};
+            const bool quit = OnMainThread([&] {
+                SDL_Event event;
+                while (SDL_PollEvent(&event)) {
+                    if (event.type == SDL_QUIT) return true;
+                    padInput->HandleEvent(event, window);
+                    if (window.Handle() != nullptr) {
+                        mouseInput->HandleEvent(event, SDL_GetWindowID(window.Handle()));
+                        keyboardInput->HandleEvent(event, SDL_GetWindowID(window.Handle()));
+                        imeTextInput->HandleEvent(event, SDL_GetWindowID(window.Handle()));
+                    }
                 }
-                padInput.HandleEvent(event, window);
-                if (window.Handle() != nullptr) {
-                    mouseInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
-                    keyboardInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
-                    imeTextInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
-                }
+                padInput->Update();
+                mouseInput->UpdateCapture(!padInput->MouseModeEnabled());
+                updateDisplayRefreshRate();
+                mouseInput->UpdateCapture(!padInput->MouseModeEnabled());
+                return false;
+            });
+            if (quit) {
+                LibcRequestExit_nid_postfix(0);
+                throw ProcessShutdown{};
             }
-            padInput.Update();
-            updateDisplayRefreshRate();
-            mouseInput.UpdateCapture(!padInput.MouseModeEnabled());
+
             if (current) {
                 require(current->timing != nullptr, "missing presentation timing");
                 const auto dequeued = AgcDriver::FrameTiming::Clock::now();
                 current->timing->Add(current->timing->Get("VideoOut", "queue"), dequeued - current->queuedAt);
                 processFlip(*current);
-                int windowWidth = 0;
-                int windowHeight = 0;
-                if (window.Handle() != nullptr) SDL_GetWindowSize(window.Handle(), &windowWidth, &windowHeight);
-                if (windowWidth > 0 && windowHeight > 0) {
-                    const auto presented = AgcDriver::ComputeContainSize_nid_postfix(current->width, current->height, static_cast<std::uint32_t>(windowWidth), static_cast<std::uint32_t>(windowHeight), true);
-                    mouseInput.SetPresentation(current->width, current->height, presented.width, presented.height);
-                }
+                OnMainThread([&] {
+                    int windowWidth = 0;
+                    int windowHeight = 0;
+                    if (window.Handle() != nullptr) SDL_GetWindowSize(window.Handle(), &windowWidth, &windowHeight);
+                    if (windowWidth > 0 && windowHeight > 0) {
+                        const auto presented = AgcDriver::ComputeContainSize_nid_postfix(current->width, current->height, static_cast<std::uint32_t>(windowWidth), static_cast<std::uint32_t>(windowHeight), true);
+                        mouseInput->SetPresentation(current->width, current->height, presented.width, presented.height);
+                    }
+                });
                 const auto finished = AgcDriver::FrameTiming::Clock::now();
                 AgcDriver::FrameTiming::Clock::duration interval{};
                 {
@@ -692,7 +720,13 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
         std::lock_guard lock(flipQueue->mutex);
         if (!flipQueue->failure) flipQueue->failure = std::current_exception();
     }
-    window.Destroy();
+    OnMainThread([&] {
+        padInput.reset();
+        mouseInput.reset();
+        imeTextInput.reset();
+        keyboardInput.reset();
+        window.Destroy();
+    });
 }
 
 void VideoOutDriver::vblankLoop(std::stop_token token) {
