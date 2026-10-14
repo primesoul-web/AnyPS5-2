@@ -2324,11 +2324,96 @@ const HostImport* HostImportFor(const Context& context, std::uint64_t address, s
     return importAccess(context, state, address, address + bytes, lease);
 }
 
+std::atomic<std::uint64_t> mappedDmaBufImportsTouched{0};
+
+void touchDmaBufImports(const Context& context, const HostImports& state, const std::vector<std::uint64_t>& bases) {
+    std::vector<VkBuffer> sources;
+    for (const auto base : bases) {
+        if (const auto found = state.imports.find(base); found != state.imports.end() && found->second.dmaBuf && found->second.buffer != VK_NULL_HANDLE) sources.push_back(found->second.buffer);
+    }
+    if (sources.empty()) return;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkBuffer scratch = VK_NULL_HANDLE;
+    VkDeviceMemory scratchMemory = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    const auto release = [&] {
+        if (fence != VK_NULL_HANDLE) context.Function<PFN_vkDestroyFence>("vkDestroyFence")(context.device, fence, nullptr);
+        if (pool != VK_NULL_HANDLE) context.Function<PFN_vkDestroyCommandPool>("vkDestroyCommandPool")(context.device, pool, nullptr);
+        if (scratch != VK_NULL_HANDLE) context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer")(context.device, scratch, nullptr);
+        if (scratchMemory != VK_NULL_HANDLE) context.Function<PFN_vkFreeMemory>("vkFreeMemory")(context.device, scratchMemory, nullptr);
+    };
+    const auto check = [&](VkResult result, const char* step) {
+        if (result == VK_SUCCESS) return;
+        release();
+        char text[160];
+        std::snprintf(text, sizeof(text), "AGC graphics: first use of mapped dma-buf imports failed at %s (%d)", step, static_cast<int>(result));
+        throw std::runtime_error(text);
+    };
+    VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    poolInfo.queueFamilyIndex = context.queueFamily;
+    check(context.Function<PFN_vkCreateCommandPool>("vkCreateCommandPool")(context.device, &poolInfo, nullptr, &pool), "vkCreateCommandPool");
+    VkBufferCreateInfo scratchInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    scratchInfo.size = 4;
+    scratchInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    scratchInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    check(context.Function<PFN_vkCreateBuffer>("vkCreateBuffer")(context.device, &scratchInfo, nullptr, &scratch), "vkCreateBuffer");
+    VkMemoryRequirements requirements{};
+    context.Function<PFN_vkGetBufferMemoryRequirements>("vkGetBufferMemoryRequirements")(context.device, scratch, &requirements);
+    check(requirements.memoryTypeBits != 0 ? VK_SUCCESS : VK_ERROR_FORMAT_NOT_SUPPORTED, "the scratch memory type");
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = static_cast<std::uint32_t>(std::countr_zero(requirements.memoryTypeBits));
+    check(context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &scratchMemory), "vkAllocateMemory");
+    check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, scratch, scratchMemory, 0), "vkBindBufferMemory");
+    VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocate.commandPool = pool;
+    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate.commandBufferCount = 1;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    check(context.Function<PFN_vkAllocateCommandBuffers>("vkAllocateCommandBuffers")(context.device, &allocate, &command), "vkAllocateCommandBuffers");
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    check(context.Function<PFN_vkBeginCommandBuffer>("vkBeginCommandBuffer")(command, &begin), "vkBeginCommandBuffer");
+    const VkBufferCopy region{0, 0, 4};
+    for (const auto source : sources) context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(command, source, scratch, 1, &region);
+    check(context.Function<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(command), "vkEndCommandBuffer");
+    const VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    check(context.Function<PFN_vkCreateFence>("vkCreateFence")(context.device, &fenceInfo, nullptr, &fence), "vkCreateFence");
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &command;
+    check(context.Function<PFN_vkQueueSubmit>("vkQueueSubmit")(context.queue, 1, &submit, fence), "vkQueueSubmit");
+    check(context.Function<PFN_vkWaitForFences>("vkWaitForFences")(context.device, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+    release();
+    mappedDmaBufImportsTouched.fetch_add(sources.size(), std::memory_order_relaxed);
+}
+
+bool importMappedRanges(const Context& context, HostImports& state, const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice, std::vector<std::uint64_t>& made);
+
+std::uint64_t MappedDmaBufImportsTouched() {
+    return mappedDmaBufImportsTouched.load(std::memory_order_relaxed);
+}
+
 bool ImportMappedRanges(const Context& context, const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice) {
     if (context.hostImportAlignment == 0) return true;
     ensurePinWaiter();
     auto& state = Imports();
+    std::vector<std::uint64_t> made;
+    bool imported = false;
+    {
+        std::lock_guard lock(state.mutex);
+        imported = importMappedRanges(context, state, ranges, generation, adoptDevice, made);
+    }
+    if (made.empty()) return imported;
+    std::unique_lock<GuestMemory::GpuMutexType> gpu(GuestMemory::GpuMutex(), std::defer_lock);
+    if (!GuestMemory::GpuMutex().HeldByThisThread() && !gpu.try_lock()) return imported;
     std::lock_guard lock(state.mutex);
+    touchDmaBufImports(context, state, made);
+    return imported;
+}
+
+bool importMappedRanges(const Context& context, HostImports& state, const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice, std::vector<std::uint64_t>& made) {
     if (!adoptDevice && (state.device != context.device || state.watchDevice != context.device)) return false;
     const bool adopting = state.device != context.device;
     GuestAllocations::Lease current;
@@ -2348,7 +2433,10 @@ bool ImportMappedRanges(const Context& context, const GuestAllocations::Mapped& 
                 const std::array<std::pair<std::uint64_t, std::uint64_t>, 1> span{{{run.base, run.base + run.bytes}}};
                 if (wouldRetireImport(state, run) || StorageTexture::AnyPendingOverlaps(span)) return false;
             }
-            if (importAllocation(context, state, range->address, current, 0, false) == nullptr && GuestAllocations::GuestAllocationsGeneration_nid_postfix() != generation) state.failed.erase(importRun(current, range->address).base);
+            const bool existed = state.imports.contains(importRun(current, range->address).base);
+            const auto* entry = importAllocation(context, state, range->address, current, 0, false);
+            if (entry == nullptr && GuestAllocations::GuestAllocationsGeneration_nid_postfix() != generation) state.failed.erase(importRun(current, range->address).base);
+            if (entry != nullptr && entry->dmaBuf && !existed) made.push_back(entry->base);
         } catch (const std::exception& error) {
             std::fprintf(stderr, "[gpu] import of GPU memory mapped at 0x%llx+0x%zx failed: %s\n", static_cast<unsigned long long>(range->address), range->bytes, error.what());
         }

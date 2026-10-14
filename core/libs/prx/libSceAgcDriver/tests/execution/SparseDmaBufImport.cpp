@@ -119,9 +119,11 @@ int main() {
         std::memset(mapping + boundary - 65536, 0x11, 131072);
         const auto ranges = Register(mapping, bytes);
         const auto address = reinterpret_cast<std::uint64_t>(mapping);
+        const auto touched = AgcDriver::Graphics::MappedDmaBufImportsTouched();
         const bool atMap = device->ImportGuestMemory(ranges, GuestAllocations::GuestAllocationsGeneration_nid_postfix(), false);
         Require(Imported(device->Device(), address, static_cast<std::size_t>(bytes)), "sparse import: a range larger than udmabuf's size limit was not imported");
         Require(atMap, "sparse import: the import made without the GPU lock was refused");
+        Require(AgcDriver::Graphics::MappedDmaBufImportsTouched() == touched + 1, "sparse import: the dma-buf import made at map time was not used by the GPU before the map returned");
 
         bool filled = false;
         {
