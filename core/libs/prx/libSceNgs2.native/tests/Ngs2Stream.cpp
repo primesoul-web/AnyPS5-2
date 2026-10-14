@@ -1,5 +1,7 @@
 #include "Ngs2Test.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
@@ -128,6 +130,29 @@ static void TestStreamRejections() {
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
+static void TestStreamRetainsSubmittedData() {
+    const auto system = CreateSystem();
+    const auto master = Mastering(system, 1);
+    const auto voice = StreamVoice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER), 0, master);
+    std::vector<std::int16_t> first(6, 16384), second(8, 8192), last(6, 4096);
+    AddBlock(voice, first.data(), first.size() * 2, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE);
+    AddBlock(voice, second.data(), second.size() * 2, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE | SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND);
+    AddBlock(voice, last.data(), last.size() * 2, 20, SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND);
+    std::fill(first.begin(), first.end(), -1000);
+    std::fill(second.begin(), second.end(), -2000);
+    std::fill(last.begin(), last.end(), -3000);
+    Event(voice, SCE_NGS2_VOICE_EVENT_PLAY);
+    const std::array<std::int16_t, 20> expected{16384,16384,16384,16384,16384,16384,8192,8192,8192,8192,8192,8192,8192,8192,4096,4096,4096,4096,4096,4096};
+    for (std::uint32_t offset = 0; offset < expected.size(); offset += Grain) {
+        const auto out = RenderI16(system);
+        for (std::uint32_t i = 0; i < Grain; ++i) Require(out[i] == (offset + i < expected.size() ? expected[offset + i] : 0));
+    }
+    Ngs2SamplerVoiceState state{};
+    Require(sceNgs2VoiceGetState(voice, &state.voice_state, sizeof(state)) == SCE_NGS2_OK);
+    Require(state.num_decoded_samples == 20 && state.decoded_data_size == 40 && state.waveform_data == last.data() + last.size());
+    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
+}
+
 static const std::int16_t Unused = 0;
 
 static void TestSilenceBlock() {
@@ -188,6 +213,7 @@ int main() {
     TestStreamEndsAtDeclaredSamples();
     TestStreamClosedBeforeDeclaredSamples();
     TestStreamRejections();
+    TestStreamRetainsSubmittedData();
     TestSilenceBlock();
     TestDrainedStreamReportsEmpty();
     return 0;

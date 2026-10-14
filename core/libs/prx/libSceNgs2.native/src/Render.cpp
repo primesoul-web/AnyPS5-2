@@ -19,11 +19,11 @@ static const std::uint8_t* FrameAt(const Ngs2Voice& voice, const Ngs2Block& bloc
     if (block.data == nullptr) return nullptr;
     if (block.streaming) {
         for (const auto& piece : block.pieces) {
-            if (frame >= piece.firstFrame && frame - piece.firstFrame < piece.frames) return piece.data + (frame - piece.firstFrame) * frameBytes;
+            if (frame >= piece.firstFrame && frame - piece.firstFrame < piece.frames) return piece.pcm.data() + (frame - piece.firstFrame) * frameBytes;
         }
         return nullptr;
     }
-    return block.data + (static_cast<std::size_t>(block.info.num_skip_samples) + frame) * frameBytes;
+    return block.pcm.data() + static_cast<std::size_t>(frame) * frameBytes;
 }
 
 static void ReadPcm(const Ngs2Voice& voice, const std::uint8_t* frame, float* out) {
@@ -74,7 +74,8 @@ bool Ngs2FinishBlock(Ngs2Voice& voice) {
         0,
     };
     if (!repeat) {
-        voice.waveformEnd = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 ? block.data + block.dataCursor : block.streaming ? Ngs2StreamEnd(voice, block) : FrameAt(voice, block, block.info.num_samples);
+        voice.waveformEnd = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 ? block.data + block.dataCursor : block.streaming ? Ngs2StreamEnd(voice, block)
+                            : block.data == nullptr ? nullptr : block.data + (static_cast<std::size_t>(block.info.num_skip_samples) + block.info.num_samples) * voice.channels * sizeof(std::int16_t);
         voice.blocks.pop_front();
     }
     const auto revision = voice.waveformRevision;
