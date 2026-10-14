@@ -1,6 +1,8 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/IndirectDispatch.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include <cstdlib>
 
 namespace AgcDriver::DriverDetail {
@@ -31,6 +33,8 @@ void Driver::dispatchIndirect(QueueState& queue, std::span<const std::uint32_t> 
     if (!gpuIndirect) path = IndirectDisabled;
     else if ((initiator & 0x20u) != 0) path = IndirectThreadDimensions;
     else if (arguments % 4 != 0) path = IndirectMisaligned;
+    else if (!Graphics::RegisteredReadableCovers(arguments, 12)) path = IndirectNotImported;
+    else if (Graphics::StorageTexture::FlushPending(arguments, 12, nullptr, "indirect dispatch arguments")) path = IndirectPendingImage;
     if (path != IndirectGpu) {
         if (!resolvingAhead()) {
             const auto& resolved = resolvedAhead();

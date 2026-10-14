@@ -1,5 +1,6 @@
 #include "VulkanTestDevice.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Acb.hpp"
 #include <array>
 #include <cstdint>
@@ -84,6 +85,16 @@ int main() {
         Require(Done == 1, "the submission did not finish");
         Require(Arguments[0] == 2 && Arguments[1] == 3 && Arguments[2] == 4, "the first dispatch did not write the indirect arguments");
         Require(Counter[0] == 24, "an indirect dispatch whose arguments the dispatch before it writes ran " + std::to_string(Counter[0]) + " groups, expected 24");
+        Counter[0] = 0;
+        Done = 0;
+        {
+            GuestAllocations::Mutation mutation;
+            mutation.Add(Arguments.data(), sizeof(Arguments), true, true, true);
+        }
+        Require(sceAgcDriverSubmitAcb(0x20, &packet) == 0, "registered compute submit failed");
+        AgcDriverWaitIdle_nid_postfix();
+        Require(Done == 1 && Counter[0] == 24, "an indirect dispatch with registered arguments ran " + std::to_string(Counter[0]) + " groups, expected 24");
+        GuestAllocations::Mutation().Remove(Arguments.data());
         std::cout << "indirect arguments written ahead test passed\n";
         AgcDriverShutdown_nid_postfix();
         return 0;
