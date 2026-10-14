@@ -34,6 +34,16 @@ static void RequireRunning() {
 }
 
 int main() {
+    Require(sceSaveDataDialogGetStatus() == SAVE_DATA_DIALOG_STATUS_NONE, "initial status must be none");
+    Require(sceSaveDataDialogUpdateStatus() == SAVE_DATA_DIALOG_STATUS_NONE, "initial update status must be none");
+    Require(sceSaveDataDialogClose(nullptr) == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "uninitialized close must fail");
+    Require(sceSaveDataDialogTerminate() == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "uninitialized terminate must fail");
+    Require(sceSaveDataDialogGetStatus() == SAVE_DATA_DIALOG_STATUS_NONE, "status after failed close must be none");
+    Require(sceSaveDataDialogGetResult(nullptr) == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "uninitialized get result must fail");
+    Require(sceSaveDataDialogOpen(nullptr) == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "uninitialized open must fail");
+    Require(sceSaveDataDialogProgressBarInc(0, 10) == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "uninitialized progress inc must fail");
+    Require(sceSaveDataDialogProgressBarSetValue(0, 10) == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "uninitialized progress set must fail");
+
     Require(sceSaveDataDialogInitialize() == 0, "initialize");
 
     SaveDataDirName names[2]{{}, {"SDU1"}};
@@ -75,4 +85,5 @@ int main() {
             "selection dialog must retain the existing automatic response");
     Require(sceSaveDataDialogTerminate() == 0, "terminate");
     Require(sceSaveDataDialogGetStatus() == SAVE_DATA_DIALOG_STATUS_NONE, "terminated state");
+    Require(sceSaveDataDialogTerminate() == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "repeated terminate must fail");
 }
