@@ -5095,7 +5095,9 @@ void orderedPixelShaderTests() {
         request.target.bdaAbiVersion = ShaderRecompiler::BdaAbi::Version;
         request.layout.pushConstantSizeBytes = 128;
         request.useCache = false;
-        return ShaderRecompiler::Recompile(request).spirv.Words();
+        const auto result = ShaderRecompiler::Recompile(request);
+        const auto words = result.spirv.Words();
+        return std::vector<std::uint32_t>(words.begin(), words.end());
     };
     const auto vertexStops = vertexWords(bdaExtensions);
     const auto vertexTerminate = vertexWords(terminateExtensions);
