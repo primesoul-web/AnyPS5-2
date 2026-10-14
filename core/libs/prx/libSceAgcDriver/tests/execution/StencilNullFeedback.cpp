@@ -101,7 +101,7 @@ void AttachNullImages(ShaderRecompiler::RecompileResult& result) {
     images.imageAtomic = {false, false};
     images.imageAtomic64 = {false, false};
     result.bindings.push_back(std::move(images));
-    auto module = result.spirv.Words();
+    auto module = result.spirv.Copy();
     auto id = module[3];
     std::uint32_t scalar = 0u, floating = 0u;
     std::size_t types = 0u, functions = 0u;
