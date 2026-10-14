@@ -69,7 +69,7 @@ bool sameBindings(const std::vector<DescriptorBinding>& left, const std::vector<
 
 void requireSameArtifact(const CompiledShaderArtifact& left, const CompiledShaderArtifact& right, const char* what) {
     const std::string prefix = std::string(what) + ": ";
-    require(left.spirv.Words() == right.spirv.Words(), prefix + "SPIR-V differs");
+    require(left.spirv == right.spirv, prefix + "SPIR-V differs");
     require(left.bdaAbiVersion == right.bdaAbiVersion, prefix + "BDA ABI version differs");
     require(left.runtimeAbiVersion == right.runtimeAbiVersion, prefix + "runtime ABI version differs");
     require(left.memoryOffsetDword == right.memoryOffsetDword, prefix + "memory offset differs");
@@ -547,6 +547,16 @@ void verifyAtomicReplacement(const std::filesystem::path& directory) {
     const std::vector<std::byte> original{std::byte{0x12}, std::byte{0x00}, std::byte{0x34}};
     const std::vector<std::byte> replacement{std::byte{0xab}, std::byte{0xcd}, std::byte{0x00}, std::byte{0xef}};
     require(WriteFileAtomically(path, original), "cannot write the initial cache entry");
+#ifdef _WIN32
+    {
+        const auto renaming = CreateFileW(path.c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        require(renaming != INVALID_HANDLE_VALUE, "cannot retain the cache entry's rename handle");
+        struct Close { HANDLE file; ~Close() { CloseHandle(file); } } close{renaming};
+        std::vector<std::byte> bytes;
+        require(ReadWholeFile(path, bytes) && bytes == original, "cache reader failed while the published entry retained its rename handle");
+    }
+#endif
     {
         Reader old(path);
         require(old.Read() == original, "the retained reader did not read the original entry");
@@ -593,6 +603,36 @@ void verifyStore() {
     ShaderDiskCache::Store(key, variant);
     ShaderDiskCache::Flush();
     require(ShaderDiskCache::Load(key, loaded), "a rewritten entry does not load");
+}
+
+void verifyPersist() {
+    SampleRequest sample;
+    const auto key = sample.Key();
+    const auto variant = sampleVariant();
+    const auto persisted = ShaderDiskCache::Persist(key, variant);
+    require(persisted != nullptr, "a persisted entry was not read back");
+    const auto path = ShaderDiskCache::EntryDirectory() / ShaderDiskCache::EntryName(key);
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION region{};
+    require(VirtualQuery(persisted->artifact.spirv.data(), &region, sizeof(region)) == sizeof(region) && region.Type == MEM_MAPPED, "persisted SPIR-V is not a mapped cache entry");
+    const auto close = [](void* handle) { CloseHandle(handle); };
+    std::unique_ptr<void, decltype(close)> writer(CreateFileW(path.c_str(), GENERIC_WRITE | DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr), close);
+    require(writer.get() != INVALID_HANDLE_VALUE, "cannot retain the published cache writer");
+    CompiledVariant loaded;
+    require(ShaderDiskCache::Load(key, loaded), "cannot load a cache entry while its writer retains rename access");
+    const auto& loadedWords = loaded.artifact.spirv;
+    require(VirtualQuery(loadedWords.data(), &region, sizeof(region)) == sizeof(region) && region.Type == MEM_MAPPED, "cache loading with a retained writer did not map the entry");
+    writer.reset();
+#endif
+    requireSameVariant(variant, *persisted, "persist round trip");
+    auto detached = persisted->artifact.spirv;
+    detached[0] ^= 1u;
+    require(detached[0] != persisted->artifact.spirv[0], "changing a copied mapped module changed its owner");
+    require(WriteFileAtomically(path, std::vector<std::byte>(64, std::byte{0x5a})), "cannot replace the persisted entry");
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    require(!error, "cannot remove the replaced cache entry");
+    requireSameArtifact(variant.artifact, persisted->artifact, "a persisted entry whose file was replaced and removed");
 }
 
 struct ComputeRequest {
@@ -945,7 +985,7 @@ void verifyVertexTypeSpecialization() {
                 }
             }
             require(checked == 4u, "vertex specialization lost attribute loads");
-            require(artifact.spirv.Words() == original, "vertex specialization mutated the shared template");
+            require(std::ranges::equal(artifact.spirv.Words(), original), "vertex specialization mutated the shared template");
         }
     }
     auto invalid = artifact;
@@ -1858,6 +1898,7 @@ int main(int argc, char** argv) {
         verifyPlanRoundTrip();
         verifyPlanKey();
         verifyStore();
+        verifyPersist();
         verifyAcrossProcesses(argv[0]);
         verifyPlanAcrossProcesses(argv[0]);
         verifyEmissionFailureMemo();

@@ -14,6 +14,7 @@
 #include "prx/libSceVideoOut/include/MouseInput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/AspectFit.hpp"
 #include "prx/libSceVideoOut/include/KeyboardInput.hpp"
+#include "prx/libSceVideoOut/include/ImeTextInput.hpp"
 #include "prx/libScePad/include/PadState.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
@@ -24,6 +25,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Presentation.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Dcb.hpp"
 #include "prx/libc/include/PreciseWait.hpp"
 #include "prx/libc/include/Shutdown.hpp"
@@ -261,6 +263,9 @@ VideoOutDriver::VideoOutDriver() {
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
 #ifdef _WIN32
     SDL_SetHintWithPriority(SDL_HINT_DIRECTINPUT_ENABLED, "0", SDL_HINT_DEFAULT);
+#endif
+#ifdef __linux__
+    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
 #endif
     if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
         throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
@@ -560,6 +565,11 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
     req.cfg->flipStatus.processTime = sceKernelGetProcessTime();
     req.cfg->flipStatus.processTimeCounter = sceKernelGetProcessTimeCounter();
     req.cfg->flipStatus.flipArg = req.flipArg;
+    const auto previous = req.cfg->flipStatus.currentBuffer;
+    if (previous >= 0) {
+        auto& label = req.cfg->bufferLabels[previous];
+        AgcDriverStoreGuestLabel_nid_postfix(&label, 0);
+    }
     req.cfg->flipStatus.currentBuffer = req.index;
     req.cfg->width = req.width;
     req.cfg->height = req.height;
@@ -597,6 +607,7 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
         PadInput padInput;
         MouseInput mouseInput;
         KeyboardInput keyboardInput;
+        ImeTextInput imeTextInput;
         while (!token.stop_requested()) {
             {
                 std::unique_lock lock(flipQueue->mutex);
@@ -619,6 +630,7 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
                 if (window.Handle() != nullptr) {
                     mouseInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
                     keyboardInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
+                    imeTextInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
                 }
             }
             padInput.Update();

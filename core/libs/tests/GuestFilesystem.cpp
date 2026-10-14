@@ -170,6 +170,19 @@ static void TestParentTraversal() {
     checkInvalid("/parent-test-mount/present.txt/..", 20);
     FileStat status{};
     Require(sceKernelStat("/parent-test-mount/existing/../present.txt", &status) == 0 && status.st_size == 9);
+#ifndef _WIN32
+    for (const char* name : {"slash-unlink", "slash-remove", "slash-rename", "slash-open", "slash-kernel"}) std::ofstream(root / name) << "kept";
+    Require(unlink_nid_postfix("/parent-test-mount/slash-unlink/") == -1 && *__error_nid_postfix() == 20);
+    Require(remove_nid_postfix("/parent-test-mount/slash-remove/") == -1 && *__error_nid_postfix() == 20);
+    Require(rename_nid_postfix("/parent-test-mount/slash-rename/", "/parent-test-mount/slash-renamed") == -1 && *__error_nid_postfix() == 20);
+    Require(open_nid_postfix("/parent-test-mount/slash-open/", 0, 0) == -1 && *__error_nid_postfix() == 20);
+    Require(sceKernelUnlink("/parent-test-mount/slash-kernel/") == static_cast<int>(0x80020014u));
+    for (const char* name : {"slash-unlink", "slash-remove", "slash-rename", "slash-open", "slash-kernel"}) Require(std::filesystem::is_regular_file(root / name));
+    Require(!std::filesystem::exists(root / "slash-renamed"));
+    Require(sceKernelStat("/parent-test-mount/Existing/", &status) == 0 && (status.st_mode & 0170000) == 0040000);
+    Require(mkdir_nid_postfix("/parent-test-mount/slash-directory/", 0755) == 0 && std::filesystem::is_directory(root / "slash-directory"));
+    Require(rmdir_nid_postfix("/parent-test-mount/slash-directory/") == 0 && !std::filesystem::exists(root / "slash-directory"));
+#endif
     RemovePathAlias_nid_no_patch("parent-test-mount");
     std::error_code linkError;
     std::filesystem::create_directory_symlink("Existing", root / "directory-link", linkError);
@@ -217,9 +230,26 @@ static void TestRelinkedModuleNames() {
     std::filesystem::remove_all(root);
 }
 
+static void TestRelinkedModuleNameCase() {
+    const auto root = std::filesystem::path("anyps5-relinked-case-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    Require(std::filesystem::create_directories(root));
+    { std::ofstream file(root / "librenoircore.ps5.prx.guest.prx"); file << "relinked"; }
+    const auto requested = (root / "libRenoirCore.PS5.prx").generic_string();
+    FileStat status{};
+    Require(sceKernelStat(requested.c_str(), &status) == 0 && status.st_size == 8);
+    Require(stat_nid_postfix(requested.c_str(), &status) == 0 && status.st_size == 8);
+    Require(sceKernelCheckReachability(requested.c_str()) == 0);
+    const int opened = sceKernelOpen(requested.c_str(), 0, 0);
+    Require(opened >= 0 && sceKernelClose(opened) == 0);
+    Require(sceKernelStat((root / "libRenoirCore.PS5.prx2").generic_string().c_str(), &status) == static_cast<int>(0x80020002u));
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     TestParentTraversal();
     TestRelinkedModuleNames();
+    TestRelinkedModuleNameCase();
     Require(chmod_nid_postfix(nullptr, 0600) == -1 && *__error_nid_postfix() == 14);
     Require(sceKernelChmod_nid_postfix(nullptr, 0600) == static_cast<int>(0x8002000eu));
     Require(chmod_nid_postfix("", 0600) == -1 && *__error_nid_postfix() == 2);
