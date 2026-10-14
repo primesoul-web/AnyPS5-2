@@ -1164,6 +1164,7 @@ void EmitProgram(SpirvEmitterState& state) {
         state.module.AddFunction(spv::OpStore, state.pixelValidMaskVariable, ConstantU32(state, 1u));
     }
     if (AlphaToCoverage(state)) StoreCoverage(state, ConstantI32(state, -1));
+    EmitBdaAnchors(state);
     if (OrderedPixelShader(state)) {
         state.module.AddFunction(spv::OpBeginInvocationInterlockEXT);
     }
