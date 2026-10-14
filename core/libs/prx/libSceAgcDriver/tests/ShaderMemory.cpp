@@ -3447,6 +3447,16 @@ void verifyUnusedUnnormalizedSampler() {
     snapshot.samplers[0].dwords[2] = 0x05500180u;
     require(atBaseLevel(levelZero) == std::vector<bool>{false}, "unnormalized samplers: an S# with a LOD bias was flagged as exact at the base level");
     snapshot.samplers[0].dwords[2] = 0x05500000u;
+    auto implicitUse = levelZero;
+    implicitUse.samplers[0].uses = SamplerUseImplicitLod;
+    snapshot.samplers[0].dwords[1] = 0x00fff100u;
+    snapshot.samplers[0].dwords[2] = 0x01500180u;
+    require(atBaseLevel(implicitUse) == std::vector<bool>{true}, "unnormalized samplers: an image read through an S# without a mip filter was not flagged as exact at its base level");
+    require(atBaseLevel(selectedLod) == std::vector<bool>{true}, "unnormalized samplers: an image read at a selected LOD through an S# without a mip filter was not flagged as exact at its base level");
+    snapshot.samplers[0].dwords[2] = 0x05500180u;
+    require(atBaseLevel(implicitUse) == std::vector<bool>{false}, "unnormalized samplers: an image read through an S# with a point mip filter was flagged as exact at its base level");
+    snapshot.samplers[0].dwords[1] = 0x00fff000u;
+    snapshot.samplers[0].dwords[2] = 0x05500000u;
     snapshot.samplers[0].dwords[0] = 0x00000092u;
     const auto normalized = populate(info);
     require(normalized[0].imageUnnormalized == std::vector<bool>{false} && normalized[1].samplerUnnormalized == std::vector<bool>{false}, "unnormalized samplers: a normalized S# was flagged");
