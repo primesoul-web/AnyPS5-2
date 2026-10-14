@@ -160,7 +160,6 @@ struct VirtualQueryInfo {
     std::uint64_t offset;
     std::int32_t protection;
     std::int32_t memory_type;
-    // A byte-sized allocation unit also preserves the guest layout under MS bitfields.
     std::uint8_t is_flexible : 1;
     std::uint8_t is_direct : 1;
     std::uint8_t is_stack : 1;
