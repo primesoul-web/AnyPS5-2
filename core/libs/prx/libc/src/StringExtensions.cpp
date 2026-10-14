@@ -70,6 +70,7 @@ char* APS5_VABI dirname_nid_postfix(const char* path) {
 }
 
 std::size_t APS5_VABI strnlen_nid_postfix(const char* text, std::size_t limit) {
+    if (text == nullptr) return 0;
     std::size_t length = 0;
     while (length < limit && text[length] != '\0') ++length;
     return length;
@@ -80,8 +81,8 @@ std::size_t APS5_VABI strnlen_s_nid_postfix(const char* text, std::size_t limit)
 }
 
 char* APS5_VABI strsep_nid_postfix(char** text, const char* delimiters) {
+    if (text == nullptr || *text == nullptr || delimiters == nullptr) return nullptr;
     char* token = *text;
-    if (token == nullptr) return nullptr;
     char* end = token + std::strcspn(token, delimiters);
     if (*end == '\0') {
         *text = nullptr;
@@ -93,18 +94,25 @@ char* APS5_VABI strsep_nid_postfix(char** text, const char* delimiters) {
 }
 
 char* APS5_VABI strncat_nid_postfix(char* destination, const char* source, std::size_t limit) {
+    if (destination == nullptr) return nullptr;
+    if (source == nullptr || limit == 0) return destination;
     return std::strncat(destination, source, limit);
 }
 
 char* APS5_VABI strpbrk_nid_postfix(const char* text, const char* accept) {
+    if (text == nullptr || accept == nullptr) return nullptr;
     return const_cast<char*>(std::strpbrk(text, accept));
 }
 
 std::size_t APS5_VABI strcspn_nid_postfix(const char* text, const char* reject) {
+    if (text == nullptr) return 0;
+    if (reject == nullptr) return std::strlen(text);
     return std::strcspn(text, reject);
 }
 
 std::size_t APS5_VABI strlcat_nid_postfix(char* destination, const char* source, std::size_t capacity) {
+    if (source == nullptr) return 0;
+    if (destination == nullptr || capacity == 0) return std::strlen(source);
     const auto destinationLength = strnlen_nid_postfix(destination, capacity);
     const auto sourceLength = std::strlen(source);
     if (destinationLength < capacity) {
@@ -117,12 +125,18 @@ std::size_t APS5_VABI strlcat_nid_postfix(char* destination, const char* source,
 }
 
 char* APS5_VABI stpcpy_nid_postfix(char* destination, const char* source) {
+    if (destination == nullptr) return nullptr;
+    if (source == nullptr) {
+        *destination = '\0';
+        return destination;
+    }
     const auto length = std::strlen(source);
     std::memcpy(destination, source, length + 1);
     return destination + length;
 }
 
 char* APS5_VABI strtok_r_nid_postfix(char* text, const char* delimiters, char** state) {
+    if (state == nullptr || delimiters == nullptr) return nullptr;
     if (text == nullptr) text = *state;
     if (text == nullptr) return nullptr;
     text += std::strspn(text, delimiters);
@@ -144,6 +158,7 @@ char* APS5_VABI strtok_nid_postfix(char* text, const char* delimiters) {
 
 
 int APS5_VABI __inet_aton_nid_postfix(const char* text, void* address) {
+    if (text == nullptr) return 0;
     std::uint8_t parts[3];
     std::size_t count = 0;
     std::uint64_t value = 0;
@@ -194,7 +209,8 @@ int APS5_VABI __inet_aton_nid_postfix(const char* text, void* address) {
 }
 
 std::uint32_t APS5_VABI __inet_addr_nid_postfix(const char* text) {
-    std::uint32_t address;
+    if (text == nullptr) return 0xffffffff;
+    std::uint32_t address = 0;
     return __inet_aton_nid_postfix(text, &address) ? address : 0xffffffff;
 }
 

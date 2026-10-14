@@ -265,6 +265,7 @@ int main() {
     Require(strnlen_nid_postfix(bounded, 0) == 0);
     Require(strnlen_nid_postfix(bounded, sizeof(bounded)) == 3);
     Require(strnlen_nid_postfix("a", 8) == 1);
+    Require(strnlen_nid_postfix(nullptr, 8) == 0);
     Require(strnlen_s_nid_postfix(nullptr, 8) == 0);
     Require(strnlen_s_nid_postfix("abc", 8) == 3 && strnlen_s_nid_postfix("abcdef", 4) == 4);
     char truncated[] = "abXX";
@@ -274,6 +275,8 @@ int main() {
     Require(strlcat_nid_postfix(buffer, "cdefgh", sizeof(buffer)) == 8);
     Require(std::strcmp(buffer, "abcdefg") == 0);
     Require(strlcat_nid_postfix(buffer, "xyz", 0) == 3);
+    Require(strlcat_nid_postfix(nullptr, "xyz", 0) == 3);
+    Require(strlcat_nid_postfix(buffer, nullptr, sizeof(buffer)) == 0);
     buffer[0] = '\0';
     Require(strlcat_nid_postfix(buffer, "x", 1) == 1 && buffer[0] == '\0');
     char chained[8] = "zzzzzzz";
@@ -282,8 +285,12 @@ int main() {
     end = stpcpy_nid_postfix(end, "cd");
     Require(end == chained + 4 && std::strcmp(chained, "abcd") == 0);
     Require(stpcpy_nid_postfix(end, "") == end && chained[5] == 'z');
+    Require(stpcpy_nid_postfix(nullptr, "ab") == nullptr);
+    Require(stpcpy_nid_postfix(chained, nullptr) == chained && chained[0] == '\0');
     Require(strncat_nid_postfix(buffer, "xyz", 2) == buffer);
     Require(std::strcmp(buffer, "xy") == 0);
+    Require(strncat_nid_postfix(nullptr, "xyz", 2) == nullptr);
+    Require(strncat_nid_postfix(buffer, nullptr, 2) == buffer);
     char transformed[8] = "zzzzzzz";
     Require(strxfrm_nid_postfix(transformed, "abc", sizeof(transformed)) == 3);
     Require(std::strcmp(transformed, "abc") == 0 && transformed[4] == 'z');
@@ -300,7 +307,11 @@ int main() {
     Require(strxfrm_nid_postfix(nullptr, "abc", 0) == 3);
     Require(strpbrk_nid_postfix(buffer, "ay") == buffer + 1);
     Require(strpbrk_nid_postfix(buffer, "") == nullptr);
+    Require(strpbrk_nid_postfix(nullptr, "ay") == nullptr);
+    Require(strpbrk_nid_postfix(buffer, nullptr) == nullptr);
     Require(strcspn_nid_postfix(buffer, "y") == 1);
+    Require(strcspn_nid_postfix(nullptr, "y") == 0);
+    Require(strcspn_nid_postfix("abc", nullptr) == 3);
     const auto inetAton = [](const char* text, const char* expected) {
         unsigned char address[4] = {0xA5, 0xA5, 0xA5, 0xA5};
         if (__inet_aton_nid_postfix(text, address) != 1) return false;
@@ -317,6 +328,8 @@ int main() {
     Require(inetAton("1.2.3.4 trailing", "1.2.3.4"));
     Require(inetAton("1.2.3.4\n", "1.2.3.4"));
     Require(__inet_aton_nid_postfix("1.2.3.4", nullptr) == 1);
+    Require(__inet_aton_nid_postfix(nullptr, nullptr) == 0);
+    Require(__inet_addr_nid_postfix(nullptr) == 0xffffffff);
     for (const char* invalid : {"", " 1.2.3.4", "1.2.3.4.5", "256.1.1.1", "1.2.3.256", "1.2.65536", "08", "1..2", "a.b.c.d",
              "1.2.3.4x", "0x", "1.2.3.", "-1"}) {
         unsigned char address[4] = {0xA5, 0xA5, 0xA5, 0xA5};
@@ -341,6 +354,8 @@ int main() {
     char second[] = "x:y";
     char* firstState = nullptr;
     char* secondState = nullptr;
+    Require(strtok_r_nid_postfix(first, ",", nullptr) == nullptr);
+    Require(strtok_r_nid_postfix(first, nullptr, &firstState) == nullptr);
     Require(std::strcmp(strtok_r_nid_postfix(first, ",", &firstState), "a") == 0);
     Require(firstState == first + 3);
     Require(std::strcmp(strtok_r_nid_postfix(second, ":", &secondState), "x") == 0);
@@ -379,6 +394,8 @@ int main() {
     Require(std::strcmp(std::strtok(nullptr, ":"), "next") == 0);
     char fields[] = ",a,,b;c";
     char* cursor = fields;
+    Require(strsep_nid_postfix(nullptr, ",;") == nullptr);
+    Require(strsep_nid_postfix(&cursor, nullptr) == nullptr && cursor == fields);
     Require(strsep_nid_postfix(&cursor, ",;") == fields && fields[0] == '\0' && cursor == fields + 1);
     Require(std::strcmp(strsep_nid_postfix(&cursor, ",;"), "a") == 0);
     Require(std::strcmp(strsep_nid_postfix(&cursor, ",;"), "") == 0);
@@ -397,6 +414,8 @@ int main() {
     Require(strcasestr_nid_postfix(text, "") == text);
     Require(strcasestr_nid_postfix(text, "abcdef") == nullptr);
     Require(strcasestr_nid_postfix("", "a") == nullptr);
+    Require(strcasestr_nid_postfix(nullptr, "ab") == nullptr);
+    Require(strcasestr_nid_postfix(text, nullptr) == nullptr);
     const char highBytes[] = {static_cast<char>(0xff), 'A', 0};
     Require(strcasestr_nid_postfix(highBytes, "a") == highBytes + 1);
     CheckSecureCopySizeLimits();

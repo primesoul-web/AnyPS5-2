@@ -155,6 +155,7 @@ int APS5_VABI fnmatch_nid_postfix(const char* pattern, const char* string, int f
 }
 
 char* APS5_VABI strcasestr_nid_postfix(const char* text, const char* needle) {
+    if (text == nullptr || needle == nullptr) return nullptr;
     if (*needle == '\0') return const_cast<char*>(text);
     for (; *text != '\0'; ++text) {
         const char* candidate = text;
