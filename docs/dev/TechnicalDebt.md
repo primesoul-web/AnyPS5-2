@@ -1,5 +1,6 @@
 # Project technical debt
 
+- Native AOT integer and SIMD semantics follow [Intel SDM Volume 2](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), with [x86-64 SysV ABI](https://gitlab.com/x86-psABIs/x86-64-ABI) to [Apple ARM64 ABI](https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms) reconstruction. The floating-point profile requires nearest-even rounding, preserved subnormals, masked exceptions and unobserved status flags/NaN payloads; FPCR is checked at entry. Division and aligned-access violations trap instead of reproducing guest exception delivery. Native tests and Rosetta SSE references do not qualify PS5 hardware behavior; AVX2 has independent integer-oracle tests but no x86 AVX2 execution oracle.
 Entries about one library or component are in [debt](debt/), one file per library or component, under the same sections as this page. Entries that belong to none stay here.
 
 ### Build

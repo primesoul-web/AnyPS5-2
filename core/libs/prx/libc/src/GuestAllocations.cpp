@@ -15,6 +15,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <unistd.h>
 #else
 #include <cerrno>
 #include <cstring>
@@ -77,7 +83,7 @@ void recordChange(void* mutation, const void* pointer, std::size_t bytes) {
     if (mutation != nullptr && bytes != 0) static_cast<MutationState*>(mutation)->changed.emplace_back(reinterpret_cast<std::uintptr_t>(pointer), bytes);
 }
 
-#ifndef _WIN32
+#ifdef __linux__
 std::vector<std::pair<std::uintptr_t, std::size_t>> fileBackedWritableImage() {
     const auto image = std::filesystem::read_symlink("/proc/self/exe").string();
     std::ifstream maps("/proc/self/maps");
@@ -248,6 +254,39 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
     std::map<std::uint64_t, Page> pages;
     const auto pageSize = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE));
     std::pair<std::map<std::uint64_t, Page>*, std::uint64_t> collection{&pages, pageSize};
+#ifdef __APPLE__
+    const auto* header = _dyld_get_image_header(0);
+    require(header != nullptr && header->magic == MH_MAGIC_64, "invalid native main image");
+    const auto* image = reinterpret_cast<const mach_header_64*>(header);
+    const auto slide = static_cast<std::uintptr_t>(_dyld_get_image_vmaddr_slide(0));
+    const auto* command = reinterpret_cast<const load_command*>(image + 1);
+    for (std::uint32_t index = 0; index < image->ncmds; ++index) {
+        if (command->cmd == LC_SEGMENT_64) {
+            const auto& segment = *reinterpret_cast<const segment_command_64*>(command);
+            if (segment.vmsize != 0 && segment.initprot != VM_PROT_NONE) {
+                const auto start = slide + segment.vmaddr;
+                require(segment.vmsize <= std::numeric_limits<std::uintptr_t>::max() - start,
+                    "native main image range overflow");
+                const auto end = start + segment.vmsize;
+                for (auto page = start; page < end; page += pageSize) {
+                    mach_vm_address_t address = page;
+                    mach_vm_size_t bytes = 0;
+                    vm_region_basic_info_data_64_t info{};
+                    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+                    mach_port_t object = MACH_PORT_NULL;
+                    const auto result = mach_vm_region(mach_task_self(), &address, &bytes, VM_REGION_BASIC_INFO_64,
+                        reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+                    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+                    require(result == KERN_SUCCESS && address <= page && bytes > page - address,
+                        "cannot query native main image protection");
+                    pages[page] = {(info.protection & VM_PROT_READ) != 0, (info.protection & VM_PROT_WRITE) != 0};
+                }
+            }
+        }
+        command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+    }
+    (void)collection;
+#else
     dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
         auto& collected = *static_cast<std::pair<std::map<std::uint64_t, Page>*, std::uint64_t>*>(data);
         for (int index = 0; index < image->dlpi_phnum; ++index) {
@@ -263,6 +302,7 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
         }
         return 1;
     }, &collection);
+#endif
     require(!pages.empty(), "main guest image has no loadable segments");
     auto replacement = state.ranges;
     for (auto page = pages.begin(); page != pages.end();) {
@@ -436,7 +476,7 @@ struct RangePatch {
 };
 
 RangePatch replaceRange(const void* pointer, std::size_t bytes, bool remove, bool readable, bool writable, bool gpu) {
-    const auto address = reinterpret_cast<std::uintptr_t>(pointer);
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pointer));
     require(bytes != 0 && bytes <= std::numeric_limits<std::uint64_t>::max() - address, "invalid guest protection or unmap range");
     require(!writable || readable, "writable guest allocation must be readable");
     const auto end = address + bytes;
