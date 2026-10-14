@@ -91,7 +91,11 @@ bool messageSafety(IrShaderStage stage, bool malformed = false, bool allocate = 
     IrBuilder builder(program);
     builder.SetInsertionPoint(block);
     if (allocate) static_cast<void>(builder.Emit(IrOpcode::MeshAllocate, IrType::Void, {&builder.Constant(0u)}));
-    else if (malformed) static_cast<void>(builder.Emit(IrOpcode::Sendmsg, IrType::Void, {&builder.Constant(0u)}));
+    else if (malformed) {
+        auto& message = program.CreateValue(IrOpcode::Sendmsg, IrType::Void);
+        message.AddArgument(&builder.Constant(0u));
+        block.AppendInstruction(&message);
+    }
     else static_cast<void>(builder.Emit(IrOpcode::Sendmsg, IrType::Void, {}));
     static_cast<void>(builder.Emit(IrOpcode::Return, IrType::Void, {}));
     return StencilReplaySafe(program);
