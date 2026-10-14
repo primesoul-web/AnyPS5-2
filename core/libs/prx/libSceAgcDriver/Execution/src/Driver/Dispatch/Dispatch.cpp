@@ -58,7 +58,7 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
         packet = resolved;
         indirectArguments = ahead.indirectArguments;
     } else if (indirectArguments != 0 && matchesFillKernel(std::span(snapshot.code).subspan(codeOffset), userData, compute)) {
-
+        if (resolving) return;
         recordQueuedLabelsBeforeRead(submission.queue);
         const auto readStart = std::chrono::steady_clock::now();
         resolved = Pm4::ReadDispatchArguments(indirectArguments, packet[4]);
@@ -228,6 +228,7 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
         cached = ahead.cached;
         validated = ahead.validated;
         ++groupStats.adopted;
+        ++dispatchesAdoptedAhead;
         const auto age = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ahead.resolvedAt).count();
         groupStats.ageMs += age;
         groupStats.ageMaxMs = std::max(groupStats.ageMaxMs, age);
