@@ -4,6 +4,7 @@
 #include <nid/NidCompute.hpp>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -408,6 +409,7 @@ void ElfNidPatcher::PatchNids(std::vector<std::uint8_t>& elf, const std::string&
     };
 
     std::vector<SymbolNameUse> uses;
+    std::unordered_set<std::string> patchedExports;
     for (std::size_t i = 1u; i < symCount; ++i) {
         const std::size_t symOffset = dynSymOffset + i * sizeof(Elf64_Sym);
         const auto sym = Read<Elf64_Sym>(elf, symOffset);
@@ -424,6 +426,8 @@ void ElfNidPatcher::PatchNids(std::vector<std::uint8_t>& elf, const std::string&
             const auto it = nidMap.find(symName);
             if (it != nidMap.end())
                 newValue = it->second;
+            if (!patchedExports.insert(newValue).second)
+                throw std::runtime_error("duplicate patched export name: " + newValue);
         } else if (binding != kStbLocal && sym.st_shndx == kShnUndef) {
             const bool isUnversioned = versymOffset == 0u ||
                 (Read<std::uint16_t>(elf, versymOffset + i * sizeof(std::uint16_t)) <= 1u);
