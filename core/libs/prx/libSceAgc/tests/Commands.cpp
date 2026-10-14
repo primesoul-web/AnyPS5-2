@@ -17,7 +17,7 @@ extern "C" std::uint32_t* APS5_VABI sceAgcDcbClearState(CommandBuffer* buf, std:
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetFlip(CommandBuffer* buf, std::uint32_t handle, std::int32_t index, std::uint32_t mode, std::int64_t argument);
 extern "C" std::uint32_t* APS5_VABI sceAgcAcbWaitUntilSafeForRendering(CommandBuffer* buf, std::uint32_t handle, std::uint32_t index);
 extern "C" int APS5_VABI sceAgcSuspendPoint();
-extern "C" int APS5_VABI sceAgcInit(std::uint32_t version);
+extern "C" int APS5_VABI sceAgcInit(void* state, std::uint32_t argument);
 extern "C" void* APS5_VABI sceAgcGetRegisterDefaults();
 extern "C" void* APS5_VABI sceAgcGetRegisterDefaultsInternal();
 extern "C" void* APS5_VABI sceAgcGetRegisterDefaults2Internal(std::uint32_t version);
@@ -621,15 +621,15 @@ void testDebugRaiseException() {
 
 void testDefaults() {
     std::uint32_t state = 0x12345678;
+    std::uint64_t initState = 0x123456789abcdef0ull;
     check(sceAgcInit_0090(&state, 8) == 0 && state == 0x12345678, "AGC initialization failed or modified caller state");
     check(sceAgcInit_0090(&state, 13) == 0 && state == 0x12345678, "AGC version 13 initialization changed caller state");
     expectFailure([] { sceAgcInit_0090(nullptr, 8); });
     expectFailure([&] { sceAgcInit_0090(&state, 14); });
-    check(sceAgcInit(8) == 0, "AGC version initialization failed");
-    check(sceAgcInit(13) == 0, "AGC version 13 initialization failed");
-    check(sceAgcInit(14) == SCE_AGC_ERROR_INVALID_ARGUMENT, "unsupported AGC version did not return invalid argument");
-    check(sceAgcInit(0xffffffffu) == SCE_AGC_ERROR_INVALID_ARGUMENT, "maximum AGC version did not return invalid argument");
-    check(sceAgcInit(0xffffc278u) == SCE_AGC_ERROR_INVALID_ARGUMENT, "pointer-valued AGC argument did not return invalid argument");
+    check(sceAgcInit(&initState, 8) == 0 && initState == 0x123456789abcdef0ull, "AGC initialization failed or modified caller state");
+    check(sceAgcInit(&initState, 13) == 0 && initState == 0x123456789abcdef0ull, "AGC version 13 initialization changed caller state");
+    check(sceAgcInit(&initState, 14) == SCE_AGC_ERROR_INVALID_ARGUMENT, "unsupported AGC version did not return invalid argument");
+    check(sceAgcInit(&initState, 0xffffffffu) == SCE_AGC_ERROR_INVALID_ARGUMENT, "maximum AGC version did not return invalid argument");
     for (std::uint32_t version = 0; version < 14; ++version) {
         for (const bool internal : {false, true}) {
             auto* first = Agc::Command::GetRegisterDefaults(version, internal, __func__);

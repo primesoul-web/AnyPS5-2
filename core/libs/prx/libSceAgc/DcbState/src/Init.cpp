@@ -17,10 +17,10 @@ int APS5_VABI sceAgcInit_0090(std::uint32_t* state, std::uint32_t version) {
     return 0;
 }
 
-int APS5_VABI sceAgcInit(std::uint32_t version) {
-    if (version >= 14) return SCE_AGC_ERROR_INVALID_ARGUMENT;
-    Agc::Command::GetRegisterDefaults(version, false, __func__);
-    Agc::Command::GetRegisterDefaults(version, true, __func__);
+int APS5_VABI sceAgcInit(void*, std::uint32_t argument) {
+    if (argument >= 14) return SCE_AGC_ERROR_INVALID_ARGUMENT;
+    Agc::Command::GetRegisterDefaults(argument, false, __func__);
+    Agc::Command::GetRegisterDefaults(argument, true, __func__);
     return 0;
 }
 
