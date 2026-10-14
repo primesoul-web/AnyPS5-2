@@ -1,0 +1,209 @@
+name: Snapshots
+run-name: Snapshot ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish snapshot
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.path == '.github/workflows/build.yml' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    concurrency:
+      group: snapshots-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      TAG: vdev-${{ github.event.workflow_run.head_sha }}
+      REQUIRED: >-
+        prx-linux-vdev-${{ github.event.workflow_run.head_sha }}.zip
+        prx-linux-vdev-${{ github.event.workflow_run.head_sha }}.tar.gz
+        relinker-vdev-${{ github.event.workflow_run.head_sha }}
+        prx-windows-vdev-${{ github.event.workflow_run.head_sha }}.zip
+        prx-windows-vdev-${{ github.event.workflow_run.head_sha }}.tar.gz
+        relinker-vdev-${{ github.event.workflow_run.head_sha }}.exe
+        web-vdev-${{ github.event.workflow_run.head_sha }}.zip
+    steps:
+      - name: Check snapshot commit
+        run: |
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then echo "::error::Invalid snapshot commit: $SHA"; exit 1; fi
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check checked out commit
+        run: test "$(git rev-parse HEAD)" = "$SHA"
+      - name: Find existing snapshot release
+        id: existing
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.TAG;
+            const sha = process.env.SHA;
+            let ref = null;
+            try {
+              ({ data: ref } = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (ref && (ref.object.type !== 'commit' || ref.object.sha !== sha)) {
+              throw new Error(`Tag ${tag} already exists and does not point at ${sha}`);
+            }
+            let release = null;
+            try {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (!release) {
+              const { data: releases } = await github.rest.repos.listReleases({ owner, repo, per_page: 100 });
+              const drafts = releases.filter((candidate) => candidate.draft && candidate.tag_name === tag);
+              if (drafts.length > 1) throw new Error(`Several draft releases use ${tag}; delete the extra drafts`);
+              release = drafts[0] ?? null;
+            }
+            const state = !release ? 'none' : release.draft ? 'draft' : 'published';
+            if (state === 'published') {
+              if (!release.prerelease) throw new Error(`Published ${tag} is not a prerelease`);
+              const present = new Set(release.assets.filter((asset) => asset.state === 'uploaded' && asset.size > 0).map((asset) => asset.name));
+              const missing = process.env.REQUIRED.split(/\s+/).filter((name) => name && !present.has(name));
+              if (missing.length) throw new Error(`Published ${tag} is incomplete and cannot be changed: missing ${missing.join(', ')}`);
+            }
+            core.setOutput('state', state);
+            core.info(`Snapshot release ${tag}: ${state}`);
+      - if: steps.existing.outputs.state != 'published'
+        uses: actions/download-artifact@v8
+        with:
+          name: snapshot-web
+          path: build-wasm/web
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - if: steps.existing.outputs.state != 'published'
+        uses: actions/download-artifact@v8
+        with:
+          name: snapshot-linux
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - if: steps.existing.outputs.state != 'published'
+        uses: actions/download-artifact@v8
+        with:
+          name: snapshot-windows
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Check build artifacts
+        if: steps.existing.outputs.state != 'published'
+        shell: bash
+        run: |
+          expected=("prx-linux-$TAG.zip" "prx-linux-$TAG.tar.gz" "relinker-$TAG" "prx-windows-$TAG.zip" "prx-windows-$TAG.tar.gz" "relinker-$TAG.exe")
+          for file in "${expected[@]}"; do
+            if [ -L "dist/$file" ] || [ ! -f "dist/$file" ] || [ ! -s "dist/$file" ]; then echo "::error::Missing or invalid native snapshot file: $file"; exit 1; fi
+          done
+          if [ "$(find dist -mindepth 1 | wc -l)" -ne "${#expected[@]}" ]; then echo "::error::Unexpected files in the native snapshot artifacts"; exit 1; fi
+          if [ -n "$(find build-wasm/web ! -type f ! -type d -print -quit)" ]; then echo "::error::The web artifact contains entries that are neither files nor directories"; exit 1; fi
+          for file in native/relinker_wasm.mjs native/relinker_wasm.wasm; do
+            if [ ! -s "build-wasm/web/$file" ]; then echo "::error::Missing web converter file: $file"; exit 1; fi
+          done
+      - name: Assemble snapshot site and release files
+        if: steps.existing.outputs.state != 'published'
+        run: |
+          python3 tools/build_web.py --build build-wasm --library-archives dist --version "$TAG" --commit "$SHA" --repository "$GH_REPO"
+          python3 tools/progress.py build-wasm/web
+          python3 tools/progress_history.py build-wasm/web
+          python3 tools/package_release.py --web build-wasm/web --output dist --version "$TAG"
+          python3 tools/package_release.py --docs docs/user --output dist
+          chmod +x "dist/relinker-$TAG"
+      - name: Check snapshot files
+        if: steps.existing.outputs.state != 'published'
+        shell: bash
+        run: |
+          for file in $REQUIRED; do
+            if [ ! -s "dist/$file" ]; then echo "::error::Missing snapshot release file: $file"; exit 1; fi
+          done
+      - name: Create draft and upload files
+        if: steps.existing.outputs.state == 'none'
+        run: |
+          gh release create "$TAG" dist/* --draft --prerelease --latest=false --target "$SHA" --title "Development build ${SHA:0:12}" \
+            --notes "Automatic development snapshot of main at $SHA, built and tested by $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$RUN_ID. This is not a stable release."
+      - name: Replace files in the unpublished draft
+        if: steps.existing.outputs.state == 'draft'
+        run: gh release upload "$TAG" dist/* --clobber
+      - name: Publish complete snapshot
+        if: steps.existing.outputs.state != 'published'
+        run: gh release edit "$TAG" --draft=false --prerelease --latest=false --target "$SHA"
+      - name: Restore the published snapshot site
+        if: steps.existing.outputs.state == 'published'
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/published"
+          gh release download "$TAG" --pattern "web-$TAG.zip" --dir "$RUNNER_TEMP/published"
+          rm -rf build-wasm/web
+          mkdir -p build-wasm
+          python3 - "$RUNNER_TEMP/published/web-$TAG.zip" build-wasm/web "$TAG" <<'EOF'
+          import stat
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          sys.path.insert(0, "tools")
+          import package_release
+
+          source, web, version = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+          with zipfile.ZipFile(source) as archive:
+              members = archive.infolist()
+              if not members or len(members) > 20000 or sum(member.file_size for member in members) > 2 << 30:
+                  raise RuntimeError("Published web archive has an unexpected size")
+              names = set()
+              for member in members:
+                  name = member.filename
+                  parts = name.split("/")
+                  if member.is_dir() or "\\" in name or "\0" in name or name.startswith("/") or any(part in ("", ".", "..") for part in parts):
+                      raise RuntimeError(f"Unsafe published web archive entry: {name!r}")
+                  mode = member.external_attr >> 16
+                  if mode and not stat.S_ISREG(mode):
+                      raise RuntimeError(f"Published web archive entry is not a regular file: {name}")
+                  if name.casefold() in names:
+                      raise RuntimeError(f"Duplicate published web archive entry: {name}")
+                  names.add(name.casefold())
+              corrupt = archive.testzip()
+              if corrupt:
+                  raise RuntimeError(f"Corrupt published web archive entry: {corrupt}")
+              web.mkdir()
+              for member in members:
+                  target = web.joinpath(*member.filename.split("/"))
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with archive.open(member) as reader, target.open("xb") as writer:
+                      while chunk := reader.read(1024 * 1024):
+                          writer.write(chunk)
+          package_release.validate_web(web, version)
+          EOF
+      - name: Check published tag
+        run: |
+          if [ "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')" != "commit $SHA" ]; then echo "::error::Tag $TAG does not point at $SHA"; exit 1; fi
+          if [ "$(gh release view "$TAG" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')" != "false true" ]; then echo "::error::$TAG is not a published prerelease"; exit 1; fi
+          if [ "$(jq -r .commit build-wasm/web/release.json)" != "$SHA" ] || [ "$(jq -r .tag build-wasm/web/release.json)" != "$TAG" ]; then echo "::error::release.json does not describe $TAG"; exit 1; fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: snapshot-pages
+          path: build-wasm/web
+          if-no-files-found: error
+          include-hidden-files: true

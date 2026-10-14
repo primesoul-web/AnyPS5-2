@@ -1,55 +1,102 @@
 name: Pages
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-  release:
-    types: [published]
   workflow_run:
-    workflows: [Release]
+    workflows: [Snapshots]
     types: [completed]
+  workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
+permissions: {}
 
 jobs:
   pages:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.path == '.github/workflows/snapshots.yml' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Select snapshot of current main
+        id: select
+        uses: actions/github-script@v8
         with:
-          ref: main
-          fetch-depth: 0
-      - name: Build web converter
+          script: |
+            const { owner, repo } = context.repo;
+            const repository = `${owner}/${repo}`;
+            const { data: branch } = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
+            const main = branch.commit.sha;
+            const commit = (run) => /^Snapshot ([0-9a-f]{40})$/.exec(run.display_title ?? '')?.[1];
+            const eligible = (run) => run.conclusion === 'success' && run.event === 'workflow_run' && run.head_branch === 'main' &&
+              run.path === '.github/workflows/snapshots.yml' && run.repository?.full_name === repository &&
+              run.head_repository?.full_name === repository;
+            for await (const { data } of github.paginate.iterator(github.rest.actions.listWorkflowRuns, {
+              owner, repo, workflow_id: 'snapshots.yml', branch: 'main', event: 'workflow_run', status: 'success', per_page: 100
+            })) {
+              for (const run of data.workflow_runs) {
+                if (!eligible(run) || commit(run) !== main) continue;
+                const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: run.id, name: 'snapshot-pages' });
+                if (!artifacts.artifacts.some((artifact) => artifact.name === 'snapshot-pages' && !artifact.expired)) continue;
+                core.setOutput('run-id', String(run.id));
+                core.setOutput('sha', main);
+                await core.summary.addRaw(`Deploying the snapshot of main at ${main} from run ${run.html_url}`).write();
+                return;
+              }
+            }
+            if (context.eventName === 'workflow_run') {
+              await core.summary.addRaw(`No successful snapshot artifact for current main ${main}: keeping the current site`).write();
+              return;
+            }
+            core.setFailed(`No successful snapshot with a site artifact exists for current main ${main}; the current site is kept`);
+      - if: steps.select.outputs.run-id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: snapshot-pages
+          path: site
+          run-id: ${{ steps.select.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - name: Check snapshot site
+        if: steps.select.outputs.run-id != ''
         shell: bash
-        run: |
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.3
-          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.3
-          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          emcmake cmake -S . -B build-wasm -DANYPS5_BUILD_WASM=ON -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-wasm --target relinker_web --parallel 2
-      - name: Test web converter
-        run: python3 tools/test_web.py --build build-wasm
-      - name: Download latest release libraries
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 tools/build_web.py --build build-wasm --libraries
-      - run: python3 tools/progress.py build-wasm/web
-      - run: python3 tools/progress_history.py build-wasm/web
-      - uses: actions/upload-pages-artifact@v5
+          SHA: ${{ steps.select.outputs.sha }}
+        run: |
+          if [ -n "$(find site ! -type f ! -type d -print -quit)" ]; then echo "::error::The site artifact contains entries that are neither files nor directories"; exit 1; fi
+          if [ "$(jq -r .commit site/release.json)" != "$SHA" ] || [ "$(jq -r .tag site/release.json)" != "vdev-$SHA" ]; then echo "::error::The site artifact does not describe main at $SHA"; exit 1; fi
+      - if: steps.select.outputs.run-id != ''
+        uses: actions/upload-pages-artifact@v5
         with:
-          path: build-wasm/web
+          path: site
+      - name: Check main has not moved
+        id: current
+        if: steps.select.outputs.run-id != ''
+        uses: actions/github-script@v8
+        env:
+          SHA: ${{ steps.select.outputs.sha }}
+        with:
+          script: |
+            const { data: branch } = await github.rest.repos.getBranch({ ...context.repo, branch: 'main' });
+            const current = branch.commit.sha === process.env.SHA;
+            if (!current) {
+              await core.summary.addRaw(`Main moved from ${process.env.SHA} to ${branch.commit.sha}: keeping the current site`).write();
+            }
+            core.setOutput('deploy', current);
       - id: deployment
+        if: steps.current.outputs.deploy == 'true'
         uses: actions/deploy-pages@v5
