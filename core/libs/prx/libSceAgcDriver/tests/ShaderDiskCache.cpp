@@ -1921,7 +1921,7 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--resource-plan-codec") {
             verifyResultRoundTrip();
             verifyEntryRoundTrip();
-            verifyIndirectImagePlanModes();
+            verifyPlanRoundTrip();
             std::cout << "resource plan codec tests passed\n";
             return 0;
         }
