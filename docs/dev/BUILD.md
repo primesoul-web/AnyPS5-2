@@ -14,9 +14,83 @@ Python must be found during CMake configuration for Python tests to be registere
 
 This mode builds the conversion tool and its tests on Linux, Windows and macOS, including Apple Silicon. macOS uses AppleClang from the Xcode command-line tools; Windows uses the MinGW-w64 toolchain below. The executable is `build-relinker/core/relinker/relinker` (`relinker.exe` on Windows with Ninja).
 
-The output remains x86-64 Linux ELF or Windows PE. Converted games need system libraries built for the target OS and a compatible x86-64 host. This mode does not build those libraries or provide macOS game execution. Tests inspect both output formats; execution checks run only on their compatible hosts.
+The output is x86-64 Linux ELF, Windows PE or, with `--macos`, Mach-O. Converted games need system libraries built for the target OS by the [full build](#full-build) and an x86-64 host, which on Apple silicon is Rosetta. Tests inspect every output format; execution checks run only on their compatible hosts.
 
 Use a separate build directory for the full build.
+
+## Experimental native Apple ARM64 compiler
+
+`ANYPS5_NATIVE_AOT` enables an offline Apple ARM64 compiler on Apple Silicon or Linux. The default `apple-arm64` target emits Mach-O for Apple Silicon. The optional `linux-arm64` validation target emits AArch64 ELF so Linux ARM64 CI can execute compiler output natively. It reads x86-64 ELF code and explicit function/data contracts, emits LLVM IR, and optionally builds an ARM64 Mach-O object with Xcode's Clang. Generated code uses native calls and stack frames; there is no shipped x86 decoder, interpreter or JIT. This target is an initial compiler implementation, not a complete macOS game runtime.
+
+It requires Python 3.10 or newer, Xcode command-line tools on macOS or Clang on Linux, and two pinned source submodules. Execution tests require a native ARM64 host. Linux x86-64 can cross-compile both object formats but does not run them. The regular relinker and full build keep their existing behavior when the option is off.
+
+```sh
+git submodule update --init 3rdparty/capstone 3rdparty/pyelftools
+cmake -S . -B build-aot -G Ninja -DCMAKE_BUILD_TYPE=Release -DANYPS5_RELINKER_ONLY=ON -DANYPS5_NATIVE_AOT=ON -DBUILD_TESTING=ON
+cmake --build build-aot --parallel
+ctest --test-dir build-aot --output-on-failure --parallel 2
+python3 build-aot/core/aot/native_aot.py input.elf --contracts contracts.json --output module.ll --object module.o
+```
+
+The contract has `schema: 1`, the input file's `sha256`, `functions`, `imports`, complete non-executable `data` segments, and `pointer_relocations`. Each function declares its guest address and size, native symbol name, scalar result and parameter types. Import keys are the ELF symbol names; values declare the native provider's name and signature. Relocation entries are `[guest_slot, guest_target]` pairs. The compiler checks these against the image instead of guessing an ABI. The generated object must be linked with native implementations of its imports and a native entry-point caller. It does not include PS5 system libraries, a process loader or application packaging.
+
+Supported operations cover declared scalar integer, SSE and VEX integer/bitwise subsets. Native signatures support integer and pointer parameters, `float`/`double`, narrow integer extension and stack arguments. Direct calls and resolved tail calls use native functions. Register or memory calls require an instruction-address-bound signature and a declared compatible target set; target completeness remains the annotation author's responsibility. The recovery helper in `core/aot/recover.py` collects symbol, unwind and companion-object evidence but does not infer signatures or prove all indirect targets.
+
+The tests build synthetic ELF inputs, compile and execute ARM64 code, check native callback/tail-call ABIs and compare supported operations with independent integer oracles and x86 SSE probes. The SSE reference executables use Rosetta on Apple Silicon; generated ARM64 programs do not. Those differential tests therefore require Rosetta to be installed. They do not qualify console hardware, complete games or performance.
+
+### Source-built native runtime example
+
+Initialize `3rdparty/ps5link-sdk` at its recorded commit. This optional source dependency builds the public SDK linker and startup code under its GPL-3.0 license; no third-party fixture binaries are checked in. The ordinary compiler build does not require it.
+
+```
+git submodule update --init 3rdparty/capstone 3rdparty/pyelftools 3rdparty/ps5link-sdk
+cmake -S . -B build-aot -G Ninja -DCMAKE_BUILD_TYPE=Release -DANYPS5_RELINKER_ONLY=ON -DANYPS5_NATIVE_AOT=ON -DANYPS5_NATIVE_AOT_EXAMPLE=ON -DBUILD_TESTING=ON
+cmake --build build-aot --target native_aot_hello_notify --parallel 3
+```
+
+On Apple Silicon this command compiles the SDK's `hello_notify` source to x86-64 ELF, derives hash-bound contracts from matched companion objects and DWARF stack locations, emits ARM64 Mach-O, links the runtime, and executes the resulting program. It checks the notification, process exit and teardown callback, an ARM64-only executable, and `sysctl.proc_translated=0`. The runtime reuses the repository's application heap, notification and timer implementations with native image registration and startup glue. Missing imports fail during contract generation or linking. No game runtime, module loader or interpreter is bundled.
+
+The default CI source variant changes only the example's 30-second delay to 1,000 microseconds so each test remains below 30 seconds; the runtime's sleep function is not bypassed. The source hashes, function coverage, frame prologue and debug stack object must match the declared example. The generated `build-aot/core/aot/hello-notify/contracts.json`, `module.ll`, `module.optimized.ll` and `result.json` describe the actual input and result. To build and run the original delay on Apple Silicon or Linux ARM64, use `cmake --build build-aot --target native_aot_hello_notify_original`. This manual target writes to the `hello-notify/original` subdirectory and remains outside the time-limited CTest suite.
+
+On Linux ARM64 the same target emits AArch64 ELF and executes it natively, checking the notification, exit, teardown, executable machine type and host architecture. Immutable imports use ELF RELRO and startup checks of the actual process mappings. Linux x86-64 cross-compiles the example to Apple ARM64 Mach-O without executing it. Both Linux configurations also run the native C++ image, heap, notification, timer and readonly-page tests. The ARM64 CI job runs the AOT tests only; the relinker's x86-only execution tests remain in the x86-64 job. Apple Silicon runs the full native compiler suite and the Mach-O example. Rosetta is needed only for the older x86 SSE reference tests, not for building or executing either native runtime example.
+
+The CLI accepts `--target apple-arm64` (default) or `--target linux-arm64`; the selected target is recorded in the compilation report. Linux ARM64 exists to validate the same lowering and runtime consumer in Linux CI. Its qualification is limited to the tested scalar/provider/example paths and is not a complete additional platform port.
+
+
+Guest TLS and C++ exceptions, aggregate and variadic ABIs, general computed jumps, x87, atomics, guest fault delivery, concurrent memory semantics and full module lifecycle are incomplete. Unsupported instructions and declared ABIs reject. Pointer operands need a proven native origin: declared pointer arguments/results, reconstructed image/frame addresses or tracked pointer cells. For acyclic direct calls within the image, the compiler infers writes from validated instruction states, including transitive tail calls. Private frame writes preserve caller memory proofs; fixed image writes invalidate overlapping pointer cells. For a single-entry straight-line loop, constant initialization, one positive 64-bit increment after an equality exit test, and exact reachability of the exit value can prove an unsigned index range without wraparound. The range applies only inside that loop; indexed frame writes preserve unrelated pointer cells only when their entire byte range stays inside the native frame. The report records these bounded-loop proofs. Fixed-size writes through declared pointer parameters are inferred with signed constant offsets and propagated through acyclic direct and tail calls. A known register argument or tracked stack argument resolves them to a bounded frame/image region or to a caller parameter. Overlapping ranges are combined per parameter; different parameters may alias. Unresolved caller parameters still invalidate memory proofs, while their relative writes remain available to higher-level callers. Other loop shapes, unqualified imports, indirect calls, recursive call chains and unresolved aliases retain conservative invalidation. Exact eight-byte pointer stores, spills and reloads retain their frame/image/parameter origin, including declared incoming stack parameters. Partial, wide or potentially aliasing writes invalidate every overlapping cell; unknown calls clear these origins. Control-flow joins retain only identical origins on all paths. Arbitrary pointer fields loaded from structs still reject. Inferred effects and provider-binding preconditions are included in the compilation report. Concurrent accesses are not qualified by the single-threaded memory model. See [TechnicalDebt](TechnicalDebt.md) for the remaining qualification limits.
+
+Import contracts optionally accept `memory_effects` with exactly `writes`, `callbacks` and a nonempty `evidence` string. These are caller-verified assertions about the actual native provider and execution profile, not inferred or checked against its binary. `writes` must cover all changes to guest-visible memory, including captured aliases and globals. `callbacks: false` asserts no guest callback or reentry during the call. Private host state is excluded only when it cannot alias tracked guest memory; asynchronous mutation is outside this profile. Missing effects or possible guest callbacks invalidate memory proofs.
+
+For example, a verified native `memset(ptr, i32, u64)` provider may declare:
+
+```json
+"memory_effects": {
+  "writes": [{"parameter": 0, "size_parameter": 2}],
+  "callbacks": false,
+  "evidence": "Identify the provider implementation/version, source and verified execution constraints"
+}
+```
+
+Each write starts at a pointer parameter and specifies either a constant unsigned byte `size` or an integer `size_parameter`. Indices are zero-based. The current analysis requires a register or tracked stack pointer argument with a proven frame/image address and a constant extent; unresolved or out-of-region destinations and unknown extents retain conservative invalidation. A zero extent performs no write. `writes: []` asserts no guest-visible writes. Known scalar stack bytes can supply null pointer arguments and constant extents, including stack-passed sizes. Partial values and conflicting control-flow paths do not prove a complete constant. An all-zero pointer argument is accepted as native null without assigning pointer provenance to arbitrary integers. Native return-pointer identity still follows the result ABI contract; return aliases are not inferred.
+
+Provider effects apply only while the import slot retains its original binding. Writes invalidate binding proofs even when they store another native pointer. Callee binding preconditions propagate through direct, tail and declared indirect calls, including recursive dependencies, and must hold before calling code compiled under those assumptions. External native callers must honor the reported preconditions as well. Internal functions cannot override inferred effects with annotations. The report retains provider evidence for review; linking the matching provider remains the caller's responsibility.
+
+
+The optional `native_runtime_registration: true` contract validates the process/libc parameter chain and allocator callback ABIs, emits a versioned native image descriptor, and registers it after pointer relocations. Link these objects with the `anyps5_native_image` static target and the actual native import providers. The registry supplies `ApplicationProcessParameters_nid_no_patch`; do not also link the ordinary executable-image implementation of that symbol. No fixed guest data address is required in the launcher. The component accepts one main image with static metadata lifetime; module loading/unloading and complete runtime integration remain outside this target. Allocator extension callbacks without a supported signature reject.
+
+Functions may opt into `checked_stack_accesses`: each record has an instruction `address`, memory `operand` index, a declared stack object's `object_offset`, and a boolean `pointer`. The instruction must have one memory operand with a proven native frame base. The compiler emits native bounds checks before the access and traps on violation; this does not provide guest fault delivery. A `pointer: true` scalar load additionally checks eight-byte cell alignment and requires every candidate cell to contain an independently proved native pointer. Declaring a pointer table does not establish its contents. Stores conservatively invalidate the object's affected pointer proofs. Object layouts remain source/recovery contracts. The report lists these checked accesses separately from statically bounded loops; their runtime cost must be measured on each workload.
+
+`immutable_data` optionally lists complete data segments as `{"address": ..., "evidence": "..."}`. This profile forbids writes, rebinding, unmapping or reprotection of those segments. Pointer relocations are emitted as symbolic native initializers in Mach-O `__DATA_CONST`; they are not patched by stores in the AOT constructor. The native image support library verifies readable, non-writable mappings before guest entry. Statically resolved writes and writable call effects into those ranges reject. Their pointer cells/import bindings remain invariant across calls; mutable segments retain conservative invalidation. External providers must honor the immutable-region contract. This is a constrained static-linking profile, not support for self-modifying import tables. See [LLVM global variables](https://llvm.org/docs/LangRef.html#global-variables) and [Apple dyld initialization](https://github.com/apple-oss-distributions/dyld/blob/main/doc/dyld4.md).
+
+### Checked graphics contracts
+
+Graphics inputs may supply instruction-bound `checked_pointer_loads`, `checked_pointer_arguments` and `checked_pointer_bases`. Each record requires source/ABI evidence, a byte extent and the relevant instruction or argument. The compiler emits native mapping checks where requested; it does not introduce a runtime decoder or interpreter. These checks establish readable host mappings, not allocation ownership, object type, lifetime or general guest-address translation. Nullability is explicit. Unannotated accesses retain the static-provenance requirements.
+
+`pointer_outputs` declares source-qualified native-provider output fields and a `zero` or `nonnegative` status predicate. Proof is available only after an immediate matching status test and branch, with the original provider binding intact. Internal declarations additionally require `within_parameter`: an emitted native guard checks the returned field against the input's known image region or declared stack object. Independently inferred parameter-field outputs must hold on every return path; an arbitrary zero store alone does not establish a native pointer origin.
+
+`checked_frame_exclusion` emits a guard that prevents a declared external store from touching the private frame, including copied incoming stack arguments. Image aliases remain conservative. A checked stack-access record may set `dynamic_base: true` to prove membership in its declared frame object at runtime. Neither form permits writes outside its checked range. SIMD aliases and partial register writes invalidate affected proofs.
+
+`guard_diagnostics: true` reports the guest instruction and guard category before a trap. The object gate still rejects residual virtual-register allocations and freezes of literal poison/undef; legitimate SSA freezes inserted by LLVM loop optimization are counted separately. `debug_pointer_loads.py` collects candidates only from matched companion-object DWARF locations and their lexical/inlined scopes. Candidates still require source-profile qualification; they are not general ABI recovery.
 
 ## Full build
 
@@ -26,11 +100,12 @@ git submodule update --init --recursive
 
 ## Requirements
 
-- x86-64, Git, CMake 3.22.1 or newer, Ninja, C++20.
+- x86-64, Git, CMake 3.22.1 or newer, Ninja, C++20. On Apple silicon the build is x86-64 and runs under Rosetta.
 - Linux display refresh queries require SDL's XRandR support (`libxrandr-dev` on Debian/Ubuntu; `libXrandr-devel` on Fedora). Bundled SDL configuration fails without it. Keep `SDL_X11_XRANDR` enabled.
 - Linux: GCC, G++, binutils. SDL's X11 backend requires X11 and Xext development headers (`libx11-dev` and `libxext-dev` on Debian/Ubuntu). Audio output needs SDL's PipeWire, PulseAudio or ALSA backend, built from their development files (`libpipewire-0.3-dev`, `libpulse-dev` and `libasound2-dev` on Debian/Ubuntu; `pipewire-devel`, `pulseaudio-libs-devel` and `alsa-lib-devel` on Fedora). SDL loads them at run time. Without any of them SDL keeps only its silent dummy and disk drivers, so configuration fails.
 - Fedora: if CMake reports `Could NOT find Threads`, install `glibc-static` and `libstdc++-static` with `sudo dnf install glibc-static libstdc++-static`, then rerun configuration. The project enables static executable linking, and FFmpeg's thread check needs these libraries.
 - Windows: only MinGW-w64 GCC 15.2.0 (WinLibs `x86_64-ucrt-posix-seh`, release `15.2.0posix-14.0.0-ucrt-r7`) is currently supported. Add its `mingw64/bin` directory to `PATH` before configuring.
+- macOS: AppleClang from the Xcode command-line tools, and Rosetta on Apple silicon (`softwareupdate --install-rosetta`). The full build selects x86-64 itself, so configure without `CMAKE_OSX_ARCHITECTURES`. The GPU tests and converted titles need the Vulkan loader and MoltenVK as x86-64 or universal binaries, such as those of the LunarG Vulkan SDK: set `DYLD_LIBRARY_PATH=<sdk>/macOS/lib` and `VK_DRIVER_FILES` to the SDK's `MoltenVK_icd.json`. Homebrew's `vulkan-loader` and `molten-vk` on Apple silicon are arm64 only and cannot be loaded. Without a loader the GPU tests are skipped. Run the GPU tests one at a time with a timeout (`ctest -j1 --timeout 30`) and leave out `agc_driver_lds_atomics64` and the flip and display tests, which open windows: a wedged GPU can stop WindowServer and restart the Mac.
 - Windows antivirus software can quarantine the executables that the relinker tests create in the temp directory, which fails `optional_plt`, `empty_tls`, `windows_address_space` and `windows_icon`. Set `TEMP` and `TMP` to a directory the scanner excludes before running `ctest`.
 - FFmpeg binaries are downloaded during configuration unless `FFMPEG_PREBUILT_DIR` is set. With the WinLibs CMake, the download fails with status 60 (`SSL peer certificate or SSH remote key was not OK`) unless `SSL_CERT_FILE` names a CA bundle, for example `C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt` from Git for Windows, as in CI.
 
@@ -40,6 +115,12 @@ git submodule update --init --recursive
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
 cmake --build build --parallel
 cmake --build build --target libs --parallel
+```
+
+On macOS, configure with AppleClang instead:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 ```
 
 `libs` is a custom target: every library under [core/libs/prx](../../core/libs/prx) is built with
@@ -161,3 +242,63 @@ ctest --test-dir build/register-context --output-on-failure
 ```
 
 On Linux x86-64, omit `CMAKE_OSX_ARCHITECTURES`; the full `BUILD_TESTING` build also registers these tests. Apple silicon runs the x86-64 tests through Rosetta. They cover the unwinder's register transfer, not the complete macOS runtime or guest exception handling.
+
+
+## Source-built native ARM64 graphics fixture
+
+This optional target runs the public SDK's `gpu_cube` as an ARM64-only macOS process through Vulkan/MoltenVK. It is a source-qualified fixture, not general game compatibility. The guest CPU code comes from the x86-64 ELF through the AOT compiler. The C-compiled ARM64 executable is an independent test reference only.
+
+The fixture stores `core/aot/examples/gpu_cube/contract-recipe.json`. Before compilation, `contract_recipe.py` verifies the input hash, a canonical digest of declared facts and guard policies, and source identities, including structured provider evidence. It derives memory-base guard sites from decoded operands and pointer-argument guard sites from resolved call ABIs. The build report records the derivation separately from the declared function/import ABIs and remaining pointer-load, stack and frame-exclusion annotations. Existing guards and compiler rejection rules still apply. The recipe does not infer object lifetime, pointee layout or missing call targets; changing a hash is not a substitute for requalifying those facts.
+
+A qualified recipe can also be expanded independently with the AOT dependency environment active:
+
+```sh
+python3 core/aot/contract_recipe.py input.elf --recipe contract-recipe.json --source-root . --output generated-contracts.json
+python3 build-aot/core/aot/native_aot.py input.elf --contracts generated-contracts.json --output module.ll --object module.o
+```
+
+The first command writes the contracts and `generated-contracts.derivation.json`; it refuses existing output paths. Source paths are relative to `--source-root`. The second command still performs the compiler's semantic validation. Expanded site counts measure generated records, not recovered ABI coverage or the number of independent manual facts.
+
+
+Requirements: Apple Silicon, a logged-in macOS graphical session, Apple clang 21.0.0 (`clang-2100.3.34.2`), CMake, Ninja and Python 3. The input contract is hash-bound; another compiler revision that changes the ELF is rejected and requires contract requalification. Install a native Vulkan loader and MoltenVK; the validated driver is MoltenVK 1.4.2. Set `DYLD_LIBRARY_PATH` to the directory containing `libvulkan.1.dylib`, `SDL_VULKAN_LIBRARY` to that library, and `VK_ICD_FILENAMES` to the MoltenVK ICD JSON. These are GPU driver dependencies, not another AnyPS5 checkout. Do not set `APS5_*` diagnostic overrides for the acceptance run.
+
+```sh
+git submodule update --init 3rdparty/capstone 3rdparty/pyelftools 3rdparty/ps5link-sdk 3rdparty/SDL2 3rdparty/Vulkan-Headers 3rdparty/SPIRV-Headers 3rdparty/SPIRV-Tools 3rdparty/glslang 3rdparty/VulkanMemoryAllocator 3rdparty/ffmpeg-core 3rdparty/freetype 3rdparty/stb 3rdparty/libjpeg-turbo 3rdparty/LibAtrac9
+cmake -S . -B build-graphics -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DANYPS5_NATIVE_AOT=ON -DANYPS5_NATIVE_GRAPHICS=ON -DBUILD_TESTING=OFF
+cmake --build build-graphics --target native_gpu_cube_check --parallel 6
+```
+
+The final command builds the required native runtime, reconstructs the x86 ELF from pinned source, compiles all 14 declared functions to ARM64, links both executables, runs 600 frames each, verifies all completed flip arguments and teardown, then compares eight 1920x1080 GPU captures with exact RGB equality. Empty, frozen, missing or mismatched images fail. Each executable has a 30-second runtime limit. Output goes into a fresh `build-graphics/core/libs/native/graphics-runs/run-*` directory with `acceptance.json`, logs and images. Link manifests bind each executable to its input object, source manifest and runtime archive hashes; the two executions must use identical runtime archives. No x86 interpreter, decoder, JIT or Rosetta is linked into the generated program.
+
+The fixture uses the SDK at `ea771e535378740b6a058b8e5419eb8a0e0e0ec8`. The explicit source variant corrects `sceAgcInit`'s argument, the 80-byte VideoOut attribute layout, context-array capacity and depth convention, and waits for actual flip completion before reusing a buffer. The original source stays unchanged. The SDK's licensed, pinned `.sb` shader containers are embedded with its own tool; this does not rebuild PSSL shader source. The generated source patch is kept with the build artifacts.
+
+The source reference preserves the input compiler's contracted constant folding (`-ffp-contract=on`) and expands remaining `llvm.fmuladd` operations into separate multiply/add operations before ARM64 code generation, matching the input's SSE2 arithmetic. Compiling the reference with contraction disabled from the start changes two projection constants by 2 ULP and three silhouette pixels in one capture. The reference-policy tests reject unrecognized or remaining fusion; the image comparison has no numerical tolerance.
+
+Configure the graphics build separately from the relinker-only/hello-notify build. `ANYPS5_NATIVE_GRAPHICS` uses the shared macOS platform implementation and builds only the static runtime closure needed here. Variadic formatting, x87-dependent math and strings, guest exception/context restoration and jump buffers are not supplied by this target; requiring them fails at link time. Native C++ exceptions used internally by the host runtime remain available. The fixture's mapping checks do not establish object lifetime or general pointer provenance for arbitrary binaries.
+
+To run the platform regressions, build the default native targets with `cmake --build build-graphics --parallel 6`, then use `ctest --test-dir build-graphics --output-on-failure`. These cover heap/direct memory, clock, TLS, shared-pointer compare/exchange, socket/event queues, write-watch, reference arithmetic policy and image validation. The graphics acceptance command requires the desktop/GPU session and is separate from these CTest cases.
+
+### Reusable AOT provider facts
+
+`core/aot/provider_catalog.py` resolves imported functions using the NID, published library and module names, and both versions from the ELF dynamic tables. Import-table indices are local to an image and are not catalog keys. The Apple catalog in `core/aot/catalogs/apple-runtime.json` checks declaration and implementation hashes before returning reviewed contracts; missing identities remain explicit obligations. Call `require_complete` before using a resolution as the complete import set. A caller may instead supply separately qualified contracts for the reported missing entries. Startup, object lifetimes and final native linkage still require consumer qualification.
+
+`core/aot/debug_candidates.py` inventories scalar C signatures and fixed frame objects from a matching DWARF 4 companion. The output remains a candidate dossier: consumers must qualify the compilation profile and original object provenance before using it. Nonstandard calling conventions, aggregate or variadic ABIs, optimized locations, overlapping objects and ambiguous executable-section mappings remain unresolved. The final AOT compiler still validates every generated contract.
+
+### Native controller consumer
+
+After configuring the native graphics runtime, build and run `cmake --build build --target native_pad_input_check`. This rebuilds the unchanged public `ps5link-sdk` `pad_input` source as an x86-64 ELF, recovers matching DWARF 4 scalar ABI and frame candidates, checks the reusable provider catalog, and compiles its seven functions to Apple ARM64. The qualification profile uses O0, fixed frame pointers and pinned source; it is not stripped-binary recovery. The unsigned divisions in `append_uint` remain explicitly qualified from the constant divisor and source arithmetic.
+
+The check compares six deterministic input/error scenarios against the same C source compiled independently for ARM64. Its test-only adapters publish input through the shared Pad provider, count sleeps, and inject user/initialization errors. Read/open errors call the real provider with invalid arguments. A separate production-provider run preserves the original 625 sleeps of 16 ms. Reports record binary/object/runtime hashes, notifications, input counts, teardown and remaining manual facts. These are simulated-input and source-translation checks, not physical-controller or console validation.
+
+For the independent-source transfer probe, obtain `samples/hello_world/main.c` from `ps5-payload-dev/sdk` revision `f5d40f02770e9b0001dd9e18056eca70b3da8b40`, retaining its GPLv3-or-later notice. After `native_pad_input_check`, run from the repository root (replace `build` with the configured native graphics build directory):
+
+```sh
+PYTHONPATH=core/aot:3rdparty/pyelftools:3rdparty/capstone/bindings/python \
+LIBCAPSTONE_PATH=build/core/aot/capstone \
+python3 core/aot/examples/notification_transfer.py --source /path/to/main.c \
+  --sdk 3rdparty/ps5link-sdk --linker build/core/libs/native/native_pad_linker \
+  --runtime build/core/libs/native/libanyps5_native_graphics.a \
+  --image-runtime build/core/aot/libanyps5_native_image.a --output-parent build/transfer-runs
+```
+
+The script checks the source hash and compares AOT against the source independently compiled for ARM64. Three catalog bindings transfer. The unprototyped `main()` is rejected by generic recovery and qualified explicitly in this source profile; its request storage is checked against matching DWARF. The probe supplies declaration-only cross headers and uses the verified ps5link CRT. It does not reproduce the original payload SDK loader. Startup, the C entry signature and host string bindings remain explicit facts.
