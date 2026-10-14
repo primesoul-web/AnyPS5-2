@@ -72,6 +72,32 @@ std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords, bool 
 }
 
 
+std::uint64_t DrawShaderSetKey(const QueueState& queue, const ShaderRegistry& registry) {
+    std::uint64_t key = 0xcbf29ce484222325ull;
+    const auto mix = [&](std::uint64_t value) {
+        key ^= value;
+        key *= 0x100000001b3ull;
+    };
+    for (const auto base : {0x008u, 0x088u, 0x0c8u, 0x108u, 0x148u}) {
+        const auto low = queue.shader.find(base);
+        const auto high = queue.shader.find(base + 1);
+        if (low == queue.shader.end() || high == queue.shader.end()) {
+            mix(0);
+            continue;
+        }
+        const auto address = (static_cast<std::uint64_t>(low->second) << 8u) | (static_cast<std::uint64_t>(high->second & 0xffu) << 40u);
+        auto it = registry.upper_bound(address);
+        if (it == registry.begin()) {
+            mix(1);
+            continue;
+        }
+        --it;
+        for (const auto& snapshot : it->second) mix(reinterpret_cast<std::uintptr_t>(snapshot.get()));
+        mix(address - it->first);
+    }
+    return key;
+}
+
 std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegistry& registry, std::uint64_t deviceSerial, std::array<std::uint64_t, 5>* components) {
     static const bool allUserWords = std::getenv("APS5_DRAW_KEY_ALL_USER_WORDS") != nullptr;
     static const bool verify = std::getenv("APS5_VERIFY_REGISTER_KEYS") != nullptr;
@@ -83,16 +109,11 @@ std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegis
         (*components)[1] = registerParts.userDataRegisters;
         (*components)[2] = registerParts.auxiliaryRegisters;
         (*components)[3] = deviceSerial;
-        (*components)[4] = 0xcbf29ce484222325ull;
+        (*components)[4] = DrawShaderSetKey(queue, registry);
     }
     const auto mix = [&](std::uint64_t value) {
         key ^= value;
         key *= 0x100000001b3ull;
-    };
-    const auto mixShaderIdentity = [&](std::uint64_t value) {
-        if (components == nullptr) return;
-        (*components)[3] ^= value;
-        (*components)[3] *= 0x100000001b3ull;
     };
     mix(deviceSerial);
     for (const auto base : {0x008u, 0x088u, 0x0c8u, 0x108u, 0x148u}) {
@@ -100,24 +121,20 @@ std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegis
         const auto high = queue.shader.find(base + 1);
         if (low == queue.shader.end() || high == queue.shader.end()) {
             mix(0);
-            mixShaderIdentity(0);
             continue;
         }
         const auto address = (static_cast<std::uint64_t>(low->second) << 8u) | (static_cast<std::uint64_t>(high->second & 0xffu) << 40u);
         auto it = registry.upper_bound(address);
         if (it == registry.begin()) {
             mix(1);
-            mixShaderIdentity(1);
             continue;
         }
         --it;
         for (const auto& snapshot : it->second) {
             const auto identity = reinterpret_cast<std::uintptr_t>(snapshot.get());
             mix(identity);
-            mixShaderIdentity(identity);
         }
         mix(address - it->first);
-        mixShaderIdentity(address - it->first);
     }
     return key;
 }

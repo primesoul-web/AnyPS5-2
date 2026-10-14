@@ -141,12 +141,24 @@ void testFingerprints() {
     check(registers.Fingerprint(low) == lowHash && registers.Fingerprint(high) == registers.RecomputeFingerprint(*high), "projection switch lost a masked write");
 }
 
+void testShaderSetKey() {
+    QueueState queue;
+    queue.shader[0x008] = 1;
+    queue.shader[0x009] = 0;
+    ShaderRegistry first;
+    ShaderRegistry second;
+    first[0x100].push_back(std::make_shared<ShaderSnapshot>());
+    second[0x100].push_back(std::make_shared<ShaderSnapshot>());
+    check(DrawShaderSetKey(queue, first) != DrawShaderSetKey(queue, second), "different shader snapshots shared a shader-set key");
+}
+
 
 }
 
 int main() {
     try {
         testFingerprints();
+        testShaderSetKey();
         std::puts("Register fingerprint dependencies and mutations passed");
         return 0;
     } catch (const std::exception& error) {
