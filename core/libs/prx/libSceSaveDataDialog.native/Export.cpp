@@ -1,15 +1,16 @@
 #include <cstdint>
-#include <cstddef>
-#include <cstring>
 #include <cstdio>
+#include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libSceSaveDataDialog.native/SaveDataDialog.hpp"
 #include "prx/libc/include/General.hpp"
 
-static int g_status = SAVE_DATA_DIALOG_STATUS_NONE;
-static int g_mode = 0;
-static void* g_user_data = nullptr;
-static char g_dir_name[32] = {};
+namespace {
+int g_status = SAVE_DATA_DIALOG_STATUS_NONE;
+int g_mode = 0;
+const void* g_user_data = nullptr;
+char g_dir_name[32] = {};
+}
 
 extern "C" {
 
@@ -33,8 +34,14 @@ int APS5_VABI sceSaveDataDialogUpdateStatus(void) {
 }
 
 int APS5_VABI sceSaveDataDialogGetResult(void* result) {
+ if (g_status == SAVE_DATA_DIALOG_STATUS_NONE) {
+  return SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED;
+ }
  if (result == nullptr) {
   return SAVE_DATA_DIALOG_ERROR_ARG_NULL;
+ }
+ if (g_status != SAVE_DATA_DIALOG_STATUS_FINISHED) {
+  return SAVE_DATA_DIALOG_ERROR_INVALID_STATE;
  }
  auto* r = static_cast<SaveDataDialogResult*>(result);
  r->mode = g_mode;
@@ -76,6 +83,12 @@ int APS5_VABI sceSaveDataDialogOpen(const void* param) {
 
 int APS5_VABI sceSaveDataDialogClose(const void* closeParam) {
  (void)closeParam;
+ if (g_status == SAVE_DATA_DIALOG_STATUS_NONE) {
+  return SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED;
+ }
+ if (g_status != SAVE_DATA_DIALOG_STATUS_RUNNING) {
+  return SAVE_DATA_DIALOG_ERROR_INVALID_STATE;
+ }
  g_status = SAVE_DATA_DIALOG_STATUS_FINISHED;
  return SAVE_DATA_DIALOG_OK;
 }
@@ -85,6 +98,9 @@ int APS5_VABI sceSaveDataDialogIsReadyToDisplay(void) {
 }
 
 int APS5_VABI sceSaveDataDialogTerminate(void) {
+ if (g_status == SAVE_DATA_DIALOG_STATUS_NONE) {
+  return SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED;
+ }
  g_status = SAVE_DATA_DIALOG_STATUS_NONE;
  g_mode = 0;
  g_user_data = nullptr;
