@@ -1565,7 +1565,12 @@ void DepthStencilTests() {
     queue.context[0x000] = 0x23;
     state = AgcDriver::Graphics::DecodeState(queue);
     Require(state.depthWrite && state.depthCompare == VK_COMPARE_OP_ALWAYS && clears(state.stencilFront), "a combined depth and stencil clear draw does not clear both planes");
-    for (const auto control : {4u, 8u}) {
+    for (const auto select : {0xc0u, 0xf00u}) {
+        queue.context[0x000] = 0x23u | select;
+        state = AgcDriver::Graphics::DecodeState(queue);
+        Require(state.depthWrite && state.depthCompare == VK_COMPARE_OP_ALWAYS && clears(state.stencilFront), "a copy sample selection without a copy changed a clear draw");
+    }
+    for (const auto control : {4u, 8u, 0x84u, 0x108u}) {
         queue.context[0x000] = 0x22u | control;
         expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "DB_RENDER_CONTROL");
     }
@@ -1723,7 +1728,7 @@ void memoryValueFillTests() {
 }
 
 void depthMaintenanceTests() {
-    for (const auto mode : {0x4u, 0x8u, 0x80u, 0x100u, 0x1000u, 0x4000u}) {
+    for (const auto mode : {0x4u, 0x8u, 0x84u, 0x108u, 0xf88u, 0x1000u, 0x4000u}) {
         for (const auto clear : {0u, 1u, 2u, 3u}) {
             auto queue = makeState();
             queue.context[0x000] = mode | clear;
@@ -1737,7 +1742,7 @@ void depthMaintenanceTests() {
             expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, reason);
         }
     }
-    for (const auto control : {0u, 1u, 2u, 3u, 0x20u, 0x40u, 0x2000u, 0x2063u}) {
+    for (const auto control : {0u, 1u, 2u, 3u, 0x20u, 0x40u, 0x80u, 0xc0u, 0x100u, 0xf00u, 0x2000u, 0x2063u, 0x2fe3u}) {
         auto queue = makeState();
         queue.context[0x000] = control;
         Require(AgcDriver::Graphics::DepthMaintenanceRejection(queue).empty(), "ordinary depth controls were mistaken for maintenance");
