@@ -333,8 +333,19 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
     const ShaderBufferResource heap = decodeBufferDescriptor(heapValue);
     const std::uint64_t heapSize = heap.GetSize();
     if (heap.Type() != 0u || heap.Base48() > std::numeric_limits<std::uint64_t>::max() - heapSize) throw std::runtime_error("bindless heap buffer is invalid");
-    if (heapSize != 0u && (heapSize < table.entryOffset || (heapSize - table.entryOffset) % TableEntryBytes != 0u)) throw std::runtime_error("bindless heap contains a partial descriptor");
-    const auto entries = heapSize > table.entryOffset ? static_cast<std::uint32_t>(std::min<std::uint64_t>((heapSize - table.entryOffset) / TableEntryBytes, std::numeric_limits<std::uint32_t>::max())) : 0u;
+    std::uint64_t entryBytes = TableEntryBytes;
+    std::uint32_t entries = 0u;
+    if (table.indexed) {
+        if (heap.NumRecords() != 0u) {
+            if (heap.SwizzleEnabled() || heap.AddTid() || heap.OutOfBounds() > 1u) throw std::runtime_error("bindless image table indexed through a V# with swizzling, ADD_TID or an unbounded range check is not implemented");
+            entryBytes = heap.Stride();
+            if (entryBytes < static_cast<std::uint64_t>(table.entryOffset) + TableEntryBytes) throw std::runtime_error("bindless heap record is smaller than its descriptor");
+            entries = heap.NumRecords();
+        }
+    } else {
+        if (heapSize != 0u && (heapSize < table.entryOffset || (heapSize - table.entryOffset) % TableEntryBytes != 0u)) throw std::runtime_error("bindless heap contains a partial descriptor");
+        entries = heapSize > table.entryOffset ? static_cast<std::uint32_t>(std::min<std::uint64_t>((heapSize - table.entryOffset) / TableEntryBytes, std::numeric_limits<std::uint32_t>::max())) : 0u;
+    }
     const auto readWord = [&](std::uint64_t address, std::uint32_t& word) {
         if (!runtime.readMemory(runtime.userContext, address, &word)) {
             throw std::runtime_error("failed to read a bindless image table from memory");
@@ -388,11 +399,12 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
     const std::uint64_t heapBase = heap.Base48();
     std::vector<DescriptorValue> candidates(keys.size());
     std::vector<std::uint8_t> valid(keys.size(), 0u);
+    std::vector<std::uint32_t> modes(keys.size(), 0u);
     std::uint32_t paddedNull = 0u;
     for (std::size_t i = 0u; i < keys.size(); ++i) {
         auto& candidate = candidates[i];
         candidate.dwordCount = 8u;
-        const std::uint64_t address = heapBase + table.entryOffset + static_cast<std::uint64_t>(keys[i]) * TableEntryBytes;
+        const std::uint64_t address = heapBase + table.entryOffset + static_cast<std::uint64_t>(keys[i]) * entryBytes;
         for (std::uint32_t dword = 0u; dword < 8u; ++dword) readWord(address + dword * sizeof(std::uint32_t), candidate.dwords[dword]);
         if (nullImageDescriptor(candidate)) {
             ++paddedNull;
@@ -401,8 +413,16 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
         if (!validImageDescriptor(candidate, image.r128)) throw std::runtime_error("bindless image table contains an invalid descriptor");
         const auto decoded = decodeImageDescriptor(candidate, image, plan.srgbDecodeFormats);
         if (decoded.fmask) throw std::runtime_error("bindless FMASK images are unsupported");
-        static_cast<void>(ResourceMaterializer::RuntimeImageMode(image, candidate, plan.info.runtimeImageModes.at(imageIndex)));
+        modes[i] = ResourceMaterializer::RuntimeImageMode(image, candidate, plan.info.runtimeImageModes.at(imageIndex));
         valid[i] = 1u;
+    }
+    if (table.laneKey && table.implicitDerivatives) {
+        std::optional<std::uint32_t> boundMode;
+        for (std::size_t i = 0u; i < keys.size(); ++i) {
+            if (valid[i] == 0u) continue;
+            if (boundMode.has_value() && modes[i] != *boundMode) throw std::runtime_error("bindless image table keyed per lane holds images of different runtime modes under an implicit-derivative access, which is not implemented");
+            boundMode = modes[i];
+        }
     }
     resolution.mapping.clear();
     for (std::size_t i = 0u; i < keys.size(); ++i) {
@@ -586,6 +606,13 @@ std::uint32_t emulatedCompareState(const ShaderInfo& info, const ResourceSnapsho
 
 void materializeTables(const IrResourcePlan& plan, ResourceSnapshot& snapshot, const std::vector<TableResolution>& tables) {
     for (std::uint32_t i = 0u; i < plan.info.buffers.size(); ++i) {
+        const auto& buffer = plan.info.buffers[i];
+        const bool scalarOnly = buffer.scalar && !buffer.written && !buffer.atomic && !buffer.formatted && buffer.imageAlias == BufferResource::NoImageAlias
+            && std::none_of(plan.memoryInfo.begin(), plan.memoryInfo.end(), [i](const MemoryInfo& memory) { return memory.kind == ResourceKind::Buffer && memory.resource == i; });
+        if (scalarOnly) {
+            snapshot.buffers.at(i).dwords[1] &= ~0x40000000u;
+            snapshot.buffers.at(i).dwords[3] = 0u;
+        }
         const auto decoded = decodeBufferDescriptor(snapshot.buffers.at(i));
         if (decoded.Type() != 0u) throw std::runtime_error("buffer descriptor uses an unsupported type");
         if (plan.stage != IrShaderStage::Compute && decoded.AddTid()) throw std::runtime_error("buffer ADD_TID is only valid for compute shaders");
@@ -643,7 +670,9 @@ std::vector<ImageResource> ResourceMaterializer::RuntimeImageModes(const ImageRe
         mode.shaderSwizzle = ShaderImageIdentitySwizzle;
         if (conversion == IrBufferFormat::Format11_11_10UNorm || conversion == IrBufferFormat::Format10_11_11Float) mode.shaderSwizzle = 0x2acu;
         modes.push_back(mode);
-        if (image.dimension == RdnaImageDimension::Dim2D && image.fmaskCompatible && !depth && packed == IrBufferFormat::Invalid && image.byElements == 0u) {
+        const bool volumeLoad = (image.dimension == RdnaImageDimension::Dim2D || image.dimension == RdnaImageDimension::Dim2DArray) && image.fmaskCompatible;
+        const bool volumeStore = image.dimension == RdnaImageDimension::Dim2DArray && storage && image.written && !image.read && !image.atomic && image.mipMode != ImageMipMode::DynamicStorage;
+        if ((volumeLoad || volumeStore) && !depth && packed == IrBufferFormat::Invalid && image.byElements == 0u) {
             auto volume = mode;
             volume.dimension = RdnaImageDimension::Dim3D;
             modes.push_back(volume);

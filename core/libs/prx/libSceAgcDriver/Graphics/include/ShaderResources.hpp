@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -106,6 +107,10 @@ private:
     Stats stats;
 };
 
+enum class ContentKeyComponent : std::size_t { Layout, BufferWord0, BufferWord1, BufferWord2, BufferWord3, Image, Sampler, ShaderData, Other, DrawTarget, Count };
+
+using ContentKeyDiff = std::array<bool, static_cast<std::size_t>(ContentKeyComponent::Count)>;
+
 class ShaderResources {
 public:
     ShaderResources(const Context& context, const ShaderRecompiler::RecompileResult& vertex, const ShaderRecompiler::RecompileResult& fragment, const ColorTarget& target, std::uint64_t indexAddress, std::size_t indexBytes);
@@ -195,6 +200,7 @@ public:
     // (their count and size remain): a compute template then serves dispatches whose constants
     // differ, and the hit refreshes its data buffers with the dispatch's words (RefreshData).
     static std::vector<std::uint32_t> ContentKey(const CompiledShader& shader, bool dataWords = true, bool movableBuffers = false);
+    static bool DiffContentKeys(std::span<const std::uint32_t> previous, std::span<const std::uint32_t> key, bool draw, ContentKeyDiff& diff);
     // Records the shader's ShaderData and FlattenedSrt words into this object's data buffers
     // (vkCmdUpdateBuffer, a transfer write the caller's pre-dispatch barrier makes visible; a
     // buffer already holding the words is left alone). Returns whether anything was recorded. With
@@ -308,6 +314,8 @@ private:
         std::uint64_t begin;
         std::uint64_t end;
         std::uint64_t serial;
+        std::uint64_t regionEnd = 0;
+        std::uint64_t committedEnd = 0;
     };
 
     // The build is two stages. A (buildPrepare, no device lock): the binding plan with its layout
@@ -433,6 +441,7 @@ private:
     Context context;
     std::vector<std::uint32_t> layoutKey;
     GuestBufferMemory guestMemory;
+    std::size_t maxDrawSnapshotBytes = MaxDrawSnapshotBytes();
     std::unique_ptr<BdaResources> bda;
     bool usesBda = false;
     bool usesFaultBuffer = false;
@@ -466,6 +475,7 @@ private:
     std::vector<std::shared_ptr<Texture>> textures;
     std::vector<bool> textureFirstLayer;
     std::vector<bool> textureBaseLevel;
+    std::vector<bool> textureSrgb;
     std::vector<std::shared_ptr<StorageTexture>> storageTextures;
     std::vector<std::uint32_t> storageMips;
     std::vector<std::uint64_t> storageKeys;

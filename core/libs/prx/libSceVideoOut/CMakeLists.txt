@@ -8,7 +8,9 @@ add_library(libSceVideoOut SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PadInput.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/MouseInput.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/KeyboardInput.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ImeTextInput.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/InputMapping.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/KeyboardMouse.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../libkernel/Time/TimedWait.cpp
 )
 
@@ -17,7 +19,7 @@ target_include_directories(libSceVideoOut PRIVATE
         ${ANYPS5_SDL2_INCLUDE_DIR}
         ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR}
 )
-target_link_libraries(libSceVideoOut PRIVATE libSceAgcDriver libScePad libSceMouse libSceKeyboard libc libkernel decoder_png SDL2-static)
+target_link_libraries(libSceVideoOut PRIVATE libSceAgcDriver libScePad libSceMouse libSceKeyboard libSceIme libc libkernel decoder_png SDL2-static)
 if(WIN32)
     target_link_libraries(libSceVideoOut PRIVATE comctl32)
 endif()
@@ -110,6 +112,17 @@ if(BUILD_TESTING)
         set_tests_properties(pad_input_mapping PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+endif()
+
+if(BUILD_TESTING)
+    add_test_executable(pad_keyboard_mouse_tests tests/KeyboardMouse.cpp src/KeyboardMouse.cpp)
+    target_include_directories(pad_keyboard_mouse_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/3rdparty/SDL2/include)
+    target_link_libraries(pad_keyboard_mouse_tests PRIVATE SDL2-static)
+    if(MINGW)
+        target_compile_options(pad_keyboard_mouse_tests PRIVATE -fasynchronous-unwind-tables)
+        target_link_options(pad_keyboard_mouse_tests PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME pad_keyboard_mouse COMMAND pad_keyboard_mouse_tests)
 endif()
 
 if(BUILD_TESTING)

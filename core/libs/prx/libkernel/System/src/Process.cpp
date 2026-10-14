@@ -129,6 +129,7 @@ constexpr int guestPriorityUser = 2;
 constexpr int guestNice = 0;
 constexpr int guestRlimitData = 2;
 constexpr int guestRlimitCore = 4;
+constexpr int guestRlimitNofile = 8;
 constexpr int guestRlimitSbsize = 9;
 constexpr int guestRlimitVmem = 10;
 constexpr int guestRlimitNpts = 11;
@@ -536,6 +537,20 @@ int APS5_VABI getrlimit_nid_postfix(int resource, GuestResourceLimit* limit) {
 #endif
         return 0;
     }
+    case guestRlimitNofile: {
+#ifdef _WIN32
+        constexpr std::int64_t crtDescriptors = 8192;
+        limit->rlim_cur = crtDescriptors;
+        limit->rlim_max = crtDescriptors;
+#else
+        rlimit native{};
+        if (::getrlimit(RLIMIT_NOFILE, &native) != 0)
+            throw std::system_error(errno, std::generic_category(), "getrlimit: getrlimit failed");
+        limit->rlim_cur = toGuestLimit(native.rlim_cur);
+        limit->rlim_max = toGuestLimit(native.rlim_max);
+#endif
+        return 0;
+    }
     case guestRlimitCpu:
     case guestRlimitFsize:
     case guestRlimitCore:
@@ -565,6 +580,11 @@ int APS5_VABI getpriority_nid_postfix(int which, int who) {
         return -1;
     }
     return guestNice;
+}
+
+int APS5_VABI getdtablesize_nid_postfix(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return -1;
 }
 
 int APS5_VABI sceKernelIsTrinityMode(void) {

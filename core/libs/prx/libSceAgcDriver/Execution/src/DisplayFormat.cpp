@@ -7,6 +7,8 @@ constexpr std::uint64_t PixelFormatUnormBit = 0x0100000000000000ull;
 constexpr std::uint64_t PixelFormatR8G8B8A8 = 0x8000000022000000ull;
 constexpr std::uint64_t PixelFormatR16G16B16A16Float = 0xc001000622000000ull;
 constexpr std::uint64_t PixelFormatB16G16R16A16Float = 0xc001000600000000ull;
+constexpr std::uint64_t PixelFormatR10G10B10A2Bt2100Pq = 0x8100070422000000ull;
+constexpr std::uint64_t PixelFormatB10G10R10A2Bt2100Pq = 0x8100070400000000ull;
 
 }
 
@@ -15,7 +17,11 @@ bool DisplayTenBit(std::uint64_t pixelFormat) {
 }
 
 bool DisplayRedLow(std::uint64_t pixelFormat) {
-    return (pixelFormat & ~PixelFormatUnormBit) == PixelFormatR8G8B8A8 || pixelFormat == PixelFormatR16G16B16A16Float;
+    return (pixelFormat & ~PixelFormatUnormBit) == PixelFormatR8G8B8A8 || pixelFormat == PixelFormatR16G16B16A16Float || pixelFormat == PixelFormatR10G10B10A2Bt2100Pq;
+}
+
+bool DisplayPq(std::uint64_t pixelFormat) {
+    return pixelFormat == PixelFormatR10G10B10A2Bt2100Pq || pixelFormat == PixelFormatB10G10R10A2Bt2100Pq;
 }
 
 bool DisplayHalfFloat(std::uint64_t pixelFormat) {
@@ -49,6 +55,13 @@ ResidentPresent ResidentPresentPath(VkFormat storage, std::uint64_t pixelFormat,
         default:
             return ResidentPresent::None;
     }
+}
+
+std::optional<std::uint32_t> ResidentPresentSlice(std::uint64_t imageAddress, std::uint64_t imageBytes, std::uint32_t slices, std::uint64_t displayAddress, std::uint64_t displayBytes) {
+    if (slices == 0 || displayBytes == 0 || imageBytes % slices != 0 || imageBytes / slices != displayBytes || displayAddress < imageAddress) return std::nullopt;
+    const auto offset = displayAddress - imageAddress;
+    if (offset % displayBytes != 0 || offset / displayBytes >= slices) return std::nullopt;
+    return static_cast<std::uint32_t>(offset / displayBytes);
 }
 
 }

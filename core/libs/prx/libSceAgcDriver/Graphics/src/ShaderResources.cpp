@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
@@ -111,6 +112,7 @@ struct CachedTexture {
     std::uint64_t sourceVersion = 0;
     std::uint64_t accounted = 0;
     std::uint64_t present = 0;
+    std::optional<std::vector<std::pair<std::uint64_t, std::uint64_t>>> committed;
 };
 
 // Entries in use order (front = most recent) with a hash index by key: a lookup is O(1) and the
@@ -554,7 +556,8 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
     // memory first.
     const bool depthCopy = depthCompare && guestBytes >= DepthCopyMinBytes() && Texture::DepthCopyFormat(ResolveTextureFormat(resource.format)) != VK_FORMAT_UNDEFINED && resource.dimension != TextureDimension::k3D;
     auto source = StorageTexture::FindPending(address, guestBytes);
-    if (source != nullptr && (depthCompare ? !depthCopy || !Texture::CanDepthCopyFrom(*source, resource) : !Texture::CanCopyFrom(*source, resource))) source.reset();
+    const bool blockCopy = source != nullptr && !depthCompare && Texture::CanBlockCopyFrom(*source, resource);
+    if (source != nullptr && !blockCopy && (depthCompare ? !depthCopy || !Texture::CanDepthCopyFrom(*source, resource) : !Texture::CanCopyFrom(*source, resource))) source.reset();
     if (source != nullptr && MetadataMoved(*source, resource)) source.reset();
     std::optional<DccKeys> keys;
     bool clearThroughKeys = false;
@@ -626,10 +629,24 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
             texture->RefreshDepthCopy();
             return texture;
         }
+        if (source != nullptr && blockCopy) {
+            auto texture = std::make_shared<Texture>(context, source, resource, components, Texture::BlockCopyTag{});
+            texture->RefreshDepthCopy();
+            return texture;
+        }
         if (source != nullptr) return std::make_shared<Texture>(context, source, resource, components);
         std::vector<std::byte> snapshot(bytes);
         ReadTextureSurface(resource, *keys, snapshot);
         return std::make_shared<Texture>(context, *context.detiler, resource, components, snapshot, depthCompare);
+    }
+    auto snapshotGeneration = generation;
+    std::optional<std::vector<std::pair<std::uint64_t, std::uint64_t>>> committed;
+    if (source == nullptr && generation == 0) {
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+        if (const auto partial = GuestMemory::CollectCommittedWrites(address, bytes, ranges); partial != 0) {
+            snapshotGeneration = partial;
+            committed = std::move(ranges);
+        }
     }
     auto& cache = Textures();
     const auto key = MakeTextureKey(context.device, words, components, depthCompare);
@@ -659,8 +676,13 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
                 const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::TextureCompare);
                 return GuestMemory::EqualsCommitted(address, it->bytes);
             };
-            if ((*keys != DccKeys::Uncompressed && *keys != DccKeys::ClearSingle) || GuestMemory::UnchangedSince(address, it->bytes.size(), it->generation) || equalsCommitted()) {
-                it->generation = generation;
+            const auto unchanged = [&] {
+                if (it->committed != committed) return false;
+                return committed.has_value() ? !Recorder::SnapshotWriteOverlaps(address, it->bytes.size()) && GuestMemory::UnchangedCommittedSince(*committed, it->generation) : GuestMemory::UnchangedSince(address, it->bytes.size(), it->generation);
+            };
+            if ((*keys != DccKeys::Uncompressed && *keys != DccKeys::ClearSingle) || unchanged() || equalsCommitted()) {
+                it->generation = snapshotGeneration;
+                it->committed = std::move(committed);
                 touchTexture(cache, it);
                 logLookup({it->texture.get(), resource, guestBytes, *keys, generation, nullptr});
                 reportTextureCounters();
@@ -671,12 +693,16 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
         eraseTexture(cache, it);
         ++cache.counts.stale;
     }
-    CachedTexture entry{key, address, std::vector<std::byte>(source != nullptr ? 0u : bytes), nullptr, *keys, generation};
+    CachedTexture entry{key, address, std::vector<std::byte>(source != nullptr ? 0u : bytes), nullptr, *keys, snapshotGeneration};
+    entry.committed = std::move(committed);
     if (source != nullptr) {
         entry.source = source;
         entry.sourceVersion = source->Version();
         if (depthCompare) {
             entry.texture = std::make_shared<Texture>(context, source, resource, components, Texture::DepthCopyTag{});
+            entry.texture->RefreshDepthCopy();
+        } else if (blockCopy) {
+            entry.texture = std::make_shared<Texture>(context, source, resource, components, Texture::BlockCopyTag{});
             entry.texture->RefreshDepthCopy();
         } else {
             entry.texture = std::make_shared<Texture>(context, source, resource, components);
@@ -1617,7 +1643,7 @@ void ShaderResources::buildComplete() {
                         write.pImageInfo = images.data() + images.size();
                         for (const auto index : binding.imageAllocations) {
                             if (index == std::numeric_limits<std::size_t>::max()) images.push_back(absentImage(binding.layout.binding));
-                            else images.push_back({VK_NULL_HANDLE, textureBaseLevel[index] ? textures[index]->BaseLevelView() : textureFirstLayer[index] ? textures[index]->FirstLayerView() : textures[index]->View(), textures[index]->Layout()});
+                            else images.push_back({VK_NULL_HANDLE, textureSrgb[index] ? textures[index]->SrgbView(textureFirstLayer[index], textureBaseLevel[index]) : textureBaseLevel[index] ? textures[index]->BaseLevelView() : textureFirstLayer[index] ? textures[index]->FirstLayerView() : textures[index]->View(), textures[index]->Layout()});
                         }
                         Require(binding.imageAllocations.size() == binding.layout.descriptorCount, "descriptor allocations disagree with compact binding");
                         break;
@@ -1729,6 +1755,13 @@ void ShaderResources::noteReusable() {
         if (serial == 0) return;
         directRegions.push_back({begin, end, serial});
     }
+    for (const auto& cut : guestMemory.CutRegions()) {
+        for (auto& region : directRegions) {
+            if (region.begin != cut.begin) continue;
+            region.regionEnd = cut.end;
+            region.committedEnd = cut.committedEnd;
+        }
+    }
     reusable = true;
 }
 
@@ -1805,9 +1838,110 @@ void VisitContentKey(const CompiledShader& shader, bool dataWords, bool movableB
 std::vector<std::uint32_t> ShaderResources::ContentKey(const CompiledShader& shader, bool dataWords, bool movableBuffers) {
     Require(shader.program != nullptr, "missing compiled shader");
     std::vector<std::uint32_t> key;
-    key.reserve(8u + shader.program->bindings.size() * 12u);
+    std::size_t words = 5;
+    const auto addWords = [&](std::size_t count) {
+        if (count > key.max_size() - words) throw std::length_error("resource content key exceeds vector limits");
+        words += count;
+    };
+    for (const auto& binding : shader.program->bindings) {
+        addWords(18);
+        addWords(binding.imageSamplers.size());
+        if ((dataWords && !movableBuffers) || !DataRole(binding.role)) addWords(binding.guestDescriptor.size());
+        for (const auto* bits : {&binding.imageWritten, &binding.samplerDepthCompare, &binding.imageDepthCompare, &binding.imageAtomic, &binding.samplerUnnormalized, &binding.samplerIntegerBorder, &binding.imageUnnormalized, &binding.imageUnnormalizedBaseLevel, &binding.bufferWritten}) addWords(bits->size() / 32u + (bits->size() % 32u != 0 ? 1u : 0u));
+    }
+    key.reserve(words);
     VisitContentKey(shader, dataWords, movableBuffers, [&](std::uint32_t word) { key.push_back(word); });
     return key;
+}
+
+namespace {
+
+using Component = ContentKeyComponent;
+
+bool LabelShaderKey(std::span<const std::uint32_t> key, std::size_t at, std::size_t end, bool movable, std::vector<std::uint8_t>& labels) {
+    const auto label = [&](std::size_t first, std::size_t count, Component component) {
+        if (first + count > end) return false;
+        std::fill(labels.begin() + static_cast<std::ptrdiff_t>(first), labels.begin() + static_cast<std::ptrdiff_t>(first + count), static_cast<std::uint8_t>(component));
+        return true;
+    };
+    if (!label(at, 5, Component::Layout)) return false;
+    const bool dataWords = key[at] != 0;
+    const auto bindings = key[at + 4];
+    at += 5;
+    for (std::uint32_t binding = 0; binding < bindings; ++binding) {
+        if (!label(at, 8, Component::Layout)) return false;
+        const auto role = static_cast<ShaderRecompiler::DescriptorRole>(key[at + 1]);
+        const auto size = key[at + 7];
+        at += 8;
+        const auto words = DataRole(role) && !(dataWords && !movable) ? 0u : size;
+        if (at + words > end) return false;
+        for (std::uint32_t i = 0; i < words; ++i) {
+            auto component = Component::Other;
+            if (role == ShaderRecompiler::DescriptorRole::GuestBuffers) component = static_cast<Component>(static_cast<std::size_t>(Component::BufferWord0) + i % 4u);
+            else if (role == ShaderRecompiler::DescriptorRole::GuestImages) component = Component::Image;
+            else if (role == ShaderRecompiler::DescriptorRole::GuestSamplers) component = Component::Sampler;
+            else if (DataRole(role)) component = Component::ShaderData;
+            labels[at + i] = static_cast<std::uint8_t>(component);
+        }
+        at += words;
+        for (int flags = 0; flags < 9; ++flags) {
+            if (at >= end) return false;
+            const auto count = 1 + (static_cast<std::size_t>(key[at]) + 31) / 32;
+            if (!label(at, count, Component::Other)) return false;
+            at += count;
+        }
+        if (at >= end) return false;
+        const auto samplers = static_cast<std::size_t>(key[at]);
+        if (!label(at, 1 + samplers, Component::Sampler)) return false;
+        at += 1 + samplers;
+    }
+    return at == end;
+}
+
+bool LabelContentKey(std::span<const std::uint32_t> key, bool draw, bool movable, std::vector<std::uint8_t>& labels) {
+    labels.assign(key.size(), static_cast<std::uint8_t>(Component::Layout));
+    if (!draw) {
+        if (LabelShaderKey(key, 0, key.size(), movable, labels)) return true;
+        if (key.size() < 2) return false;
+        labels.assign(key.size(), static_cast<std::uint8_t>(Component::Layout));
+        if (!LabelShaderKey(key, 0, key.size() - 2, movable, labels)) return false;
+        labels[key.size() - 2] = static_cast<std::uint8_t>(Component::Other);
+        labels[key.size() - 1] = static_cast<std::uint8_t>(Component::Other);
+        return true;
+    }
+    if (key.size() < 4) return false;
+    std::fill(labels.begin() + 1, labels.begin() + 3, static_cast<std::uint8_t>(Component::Other));
+    std::size_t at = 4;
+    for (std::uint32_t stage = 0; stage < key[3]; ++stage) {
+        if (at >= key.size()) return false;
+        const auto size = static_cast<std::size_t>(key[at]);
+        ++at;
+        if (at + size > key.size() || !LabelShaderKey(key, at, at + size, movable, labels)) return false;
+        at += size;
+    }
+    if (at >= key.size()) return false;
+    for (auto tail = at + 1; tail < key.size(); ++tail) labels[tail] = static_cast<std::uint8_t>(Component::DrawTarget);
+    return true;
+}
+
+}
+
+bool ShaderResources::DiffContentKeys(std::span<const std::uint32_t> previous, std::span<const std::uint32_t> key, bool draw, ContentKeyDiff& diff) {
+    diff = {};
+    std::vector<std::uint8_t> labels;
+    bool labelled = false;
+    for (const bool movable : {draw, false}) {
+        labelled = LabelContentKey(key, draw, movable, labels);
+        if (labelled) break;
+    }
+    if (!labelled || previous.size() != key.size()) {
+        diff[static_cast<std::size_t>(Component::Layout)] = true;
+        return false;
+    }
+    for (std::size_t i = 0; i < key.size(); ++i) {
+        if (previous[i] != key[i]) diff[labels[i]] = true;
+    }
+    return true;
 }
 
 bool MatchesContentKey(const CompiledShader& shader, std::span<const std::uint32_t> key) {
@@ -2451,6 +2585,10 @@ bool ShaderResources::Revalidate(std::span<const CompiledShader> shaders, ProofR
             auto serial = HostImportSerial(context, region.begin, static_cast<std::size_t>(region.end - region.begin), true);
             if (serial == 0) serial = ImageMirrorSerial(context, region.begin, static_cast<std::size_t>(region.end - region.begin));
             if (serial != region.serial) return false;
+            if (region.regionEnd != 0) {
+                const auto committed = GuestMemory::DescribeCommitted(region.begin, static_cast<std::size_t>(region.regionEnd - region.begin));
+                if (committed.ranges.size() != 1 || committed.ranges.front().first != region.begin || committed.ranges.front().second != region.committedEnd) return false;
+            }
         }
         return true;
     };
@@ -2503,6 +2641,14 @@ namespace {
 // seen for the same shader variant(s) and the first differing word is charged to its binding's role
 // (and to its index within the V# or T# element), printed as [rescache] every 10 s: it says whether
 // V# bases of ring allocations, SRT words or image descriptors churn.
+struct KeyMissWindow {
+    std::uint64_t compared = 0;
+    std::uint64_t noCandidate = 0;
+    std::uint64_t unlabelled = 0;
+    std::uint64_t identical = 0;
+    std::array<std::uint64_t, static_cast<std::size_t>(ContentKeyComponent::Count)> differing{};
+};
+
 struct ChurnCounts {
     std::array<std::uint64_t, 8> roles{};
     std::array<std::uint64_t, 4> bufferWords{};
@@ -2511,6 +2657,7 @@ struct ChurnCounts {
     std::uint64_t sameKey = 0;
     std::uint64_t layout = 0;
     std::uint64_t drawWords = 0;
+    KeyMissWindow window;
 };
 
 // Dispatch keys and draw keys are counted apart: what churns a draw's key decides the draw steps.
@@ -2519,8 +2666,20 @@ struct ChurnProfile {
     std::unordered_map<std::uint64_t, ResourceCache::Key> lastByVariant;
     ChurnCounts dispatch;
     ChurnCounts draws;
+    std::unordered_map<std::uint64_t, std::uint32_t> tracedByVariant;
+    std::size_t tracedLines = 0;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
 };
+
+constexpr std::size_t MaxTracedLines = 256;
+constexpr std::uint32_t MaxTracedLinesPerVariant = 4;
+
+const char* componentName(std::size_t component) {
+    constexpr std::array<const char*, static_cast<std::size_t>(ContentKeyComponent::Count)> names{"layout", "V# word 0", "V# word 1", "V# word 2", "V# word 3", "image", "sampler", "shader-data", "other", "draw target/index"};
+    return names[component];
+}
+
+void traceMiss(ChurnProfile& churn, bool draw, std::uint64_t variants, const ContentKeyDiff* parts);
 
 ChurnProfile& Churn() {
     static ChurnProfile profile;
@@ -2584,9 +2743,28 @@ std::shared_ptr<ShaderResources> ResourceCache::Find(const Key& key) {
     return found->second->second;
 }
 
+namespace {
+
+void traceMiss(ChurnProfile& churn, bool draw, std::uint64_t variants, const ContentKeyDiff* parts) {
+    if (churn.tracedLines >= MaxTracedLines || ++churn.tracedByVariant[variants] > MaxTracedLinesPerVariant) return;
+    ++churn.tracedLines;
+    std::string changed = parts == nullptr ? "first-seen" : "";
+    for (std::size_t i = 0; parts != nullptr && i < parts->size(); ++i) {
+        if (!(*parts)[i]) continue;
+        if (!changed.empty()) changed += ", ";
+        changed += componentName(i);
+    }
+    if (changed.empty()) changed = "no-component-change";
+    const auto hashed = (variants ^ 0x9e3779b97f4a7c15ull) * 0xff51afd7ed558ccdull;
+    AgcDriver::ProfilePrint_nid_no_patch("[keymiss] resource-content %s shader set %016llx: %s\n", draw ? "draw" : "dispatch", static_cast<unsigned long long>(hashed ^ (hashed >> 33u)), changed.c_str());
+}
+
+}
+
 void ResourceCache::noteMiss(const Key& key) {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
-    if (!profile || key.size() < 5) return;
+    static const bool trace = std::getenv("APS5_TRACE_RESOURCE_KEY_MISSES") != nullptr;
+    if ((!profile && !trace) || key.size() < 5) return;
     // The variant(s) the key belongs to: a compute key starts with the data-words flag, the stage
     // and its variant, a draw key with a marker, the device and its stages' keys (Draw.cpp
     // DrawResourceKey).
@@ -2607,6 +2785,8 @@ void ResourceCache::noteMiss(const Key& key) {
     const auto found = churn.lastByVariant.find(variants);
     if (found == churn.lastByVariant.end()) {
         ++counts.firstSeen;
+        ++counts.window.noCandidate;
+        if (trace) traceMiss(churn, draw, variants, nullptr);
         churn.lastByVariant.emplace(variants, key);
     } else {
         const auto& previous = found->second;
@@ -2626,6 +2806,19 @@ void ResourceCache::noteMiss(const Key& key) {
         } else {
             std::size_t at = 0;
             if (!chargeShaderKey(counts, key, at, diff)) ++counts.layout;
+        }
+        if (trace) {
+            ContentKeyDiff parts;
+            ++counts.window.compared;
+            if (!ShaderResources::DiffContentKeys(previous, key, draw, parts)) ++counts.window.unlabelled;
+            bool anyPart = false;
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                if (!parts[i]) continue;
+                ++counts.window.differing[i];
+                anyPart = true;
+            }
+            if (!anyPart) ++counts.window.identical;
+            traceMiss(churn, draw, variants, &parts);
         }
         found->second = key;
     }
@@ -2651,8 +2844,20 @@ void ResourceCache::noteMiss(const Key& key) {
         line += item;
         AgcDriver::ProfilePrint_nid_no_patch("%s\n", line.c_str());
     };
-    report("dispatch", churn.dispatch);
-    report("draws", churn.draws);
+    if (profile) {
+        report("dispatch", churn.dispatch);
+        report("draws", churn.draws);
+    }
+    const auto keyMiss = [](const char* what, KeyMissWindow& window) {
+        const auto count = [](std::uint64_t value) { return static_cast<unsigned long long>(value); };
+        const auto part = [&](ContentKeyComponent component) { return count(window.differing[static_cast<std::size_t>(component)]); };
+        AgcDriver::ProfilePrint_nid_no_patch("[keymiss] resource-content %s (10 s): misses %llu; differing: layout %llu, V# word0 %llu, V# word1 %llu, V# word2 %llu, V# word3 %llu, image %llu, sampler %llu, shader-data %llu, other %llu, draw target/index %llu; no-candidate %llu; identical %llu; not comparable %llu\n", what, count(window.compared + window.noCandidate), part(ContentKeyComponent::Layout), part(ContentKeyComponent::BufferWord0), part(ContentKeyComponent::BufferWord1), part(ContentKeyComponent::BufferWord2), part(ContentKeyComponent::BufferWord3), part(ContentKeyComponent::Image), part(ContentKeyComponent::Sampler), part(ContentKeyComponent::ShaderData), part(ContentKeyComponent::Other), part(ContentKeyComponent::DrawTarget), count(window.noCandidate), count(window.identical), count(window.unlabelled));
+        window = KeyMissWindow{};
+    };
+    if (trace) {
+        keyMiss("dispatch", churn.dispatch.window);
+        keyMiss("draw", churn.draws.window);
+    }
 }
 
 void ResourceCache::Insert(const Key& key, std::shared_ptr<ShaderResources> resources, std::vector<std::shared_ptr<ShaderResources>>* evicted) {
@@ -3221,7 +3426,7 @@ bool ShaderResources::precollectImages() {
 }
 
 std::shared_ptr<Texture> ShaderResources::fastTexture(const ImageRecord& record) {
-    if (record.texture == nullptr || record.texture->RefreshedPerUse()) return nullptr;
+    if (record.texture == nullptr || record.texture->RefreshedPerUse() || record.texture->IsDepthCopy()) return nullptr;
     struct Outcome {
         bool profile;
         std::chrono::steady_clock::time_point start;
@@ -3268,7 +3473,7 @@ std::shared_ptr<Texture> ShaderResources::fastTexture(const ImageRecord& record)
     auto& cache = Textures();
     std::lock_guard lock(cache.mutex);
     const auto it = findSampledEntry(cache, context.device, record.words, record.components);
-    if (it == cache.entries.end() || it->texture != record.texture) return nullptr;
+    if (it == cache.entries.end() || it->texture != record.texture || it->committed.has_value()) return nullptr;
     if (it->source == nullptr) it->generation = record.generation;
     touchTexture(cache, it);
     logLookup({record.texture.get(), record.resource, record.guestBytes, keys, record.source != nullptr ? 0 : record.generation, record.source.get()});
@@ -3308,7 +3513,7 @@ void ShaderResources::resolveImageBinding(const ShaderRecompiler::DescriptorBind
                 continue;
             }
             const auto resource = record != nullptr && record->decoded ? record->resource : DecodeTextureResource(words);
-            RequireDegammaFormat(resource.format, binding.imageSamplers[element], shaderSamplers);
+            const bool forcedSrgb = ForcesDegammaOn(resource.format, binding.imageSamplers[element], shaderSamplers);
             RequireNonSeamlessCube(resource.dimension == TextureDimension::kCube, binding.imageSamplers[element], shaderSamplers);
             const bool firstLayer = binding.imageShape == ShaderRecompiler::DescriptorImageShape::Image2D && resource.dimension == TextureDimension::k2DArray;
             if (!firstLayer && !MatchesGuestDimension(*binding.imageShape, resource.dimension)) throw std::runtime_error("AGC graphics: guest texture dimension disagrees with the shader's declared image shape (shape " + std::to_string(static_cast<int>(*binding.imageShape)) + ", dimension " + std::to_string(static_cast<int>(resource.dimension)) + ")");
@@ -3335,6 +3540,7 @@ void ShaderResources::resolveImageBinding(const ShaderRecompiler::DescriptorBind
             }
             RequireFilterMinmax(context, texture->ViewFormat(), binding.imageSamplers[element], shaderSamplers);
             RequireBorderSwizzle(resource.bcSwizzle, binding.imageSamplers[element], shaderSamplers);
+            if (forcedSrgb && !texture->HasSrgbView()) Require(false, "a texture of guest format " + std::to_string(resource.format) + ", which is not sRGB and has no sRGB view, is sampled through a sampler that forces sRGB decoding, which is not implemented");
             if (!shaderSamplers.empty()) {
                 const bool singleLevel = DescriptorSingleLevel(words);
                 const auto firstSampler = static_cast<std::size_t>(shaderSamplers.data() - samplers.data());
@@ -3352,6 +3558,7 @@ void ShaderResources::resolveImageBinding(const ShaderRecompiler::DescriptorBind
             textures.push_back(std::move(texture));
             textureFirstLayer.push_back(firstLayer);
             textureBaseLevel.push_back(baseLevel);
+            textureSrgb.push_back(forcedSrgb);
             describedRanges.push_back({"texture", resource.baseAddress, guestBytes, resource.width, resource.height, resource.format, static_cast<int>(resource.tileMode), resource.dccAddress});
             item.imageAllocations.push_back(textures.size() - 1);
         }
@@ -3546,7 +3753,7 @@ std::size_t ShaderResources::MaxDrawSnapshotBytes() {
 std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindings(Recorder& recorder, std::span<const MovedBuffer> moved) const {
     if ((_set == VK_NULL_HANDLE && fragment.set == VK_NULL_HANDLE) || usesBda) return {};
     const auto reads = guestMemory.InPlaceReads();
-    const auto maxSnapshotBytes = MaxDrawSnapshotBytes();
+    const auto maxSnapshotBytes = maxDrawSnapshotBytes;
     std::size_t totalSnapshotBytes = 0;
     auto result = std::make_shared<DrawBindings>();
     std::vector<std::size_t> selected;

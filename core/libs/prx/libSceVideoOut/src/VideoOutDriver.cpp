@@ -14,6 +14,7 @@
 #include "prx/libSceVideoOut/include/MouseInput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/AspectFit.hpp"
 #include "prx/libSceVideoOut/include/KeyboardInput.hpp"
+#include "prx/libSceVideoOut/include/ImeTextInput.hpp"
 #include "prx/libScePad/include/PadState.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
@@ -259,6 +260,12 @@ VideoOutDriver& VideoOutDriver::Get() {
 
 VideoOutDriver::VideoOutDriver() {
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#ifdef _WIN32
+    SDL_SetHintWithPriority(SDL_HINT_DIRECTINPUT_ENABLED, "0", SDL_HINT_DEFAULT);
+#endif
+#ifdef __linux__
+    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
+#endif
     if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
         throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
     }
@@ -337,7 +344,7 @@ int VideoOutDriver::Open(int busType) {
     uint64_t generation = 1;
     if (previous) {
         std::lock_guard cfgLock(previous->mutex);
-        require(!previous->opened, "port already open");
+        if (previous->opened) return -1;
         require(previous->generation != std::numeric_limits<uint64_t>::max(), "port generation overflow");
         generation = previous->generation + 1;
     }
@@ -594,6 +601,7 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
         PadInput padInput;
         MouseInput mouseInput;
         KeyboardInput keyboardInput;
+        ImeTextInput imeTextInput;
         while (!token.stop_requested()) {
             {
                 std::unique_lock lock(flipQueue->mutex);
@@ -616,6 +624,7 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
                 if (window.Handle() != nullptr) {
                     mouseInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
                     keyboardInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
+                    imeTextInput.HandleEvent(event, SDL_GetWindowID(window.Handle()));
                 }
             }
             padInput.Update();
