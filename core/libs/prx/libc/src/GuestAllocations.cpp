@@ -15,6 +15,13 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <unistd.h>
 #else
 #include <cerrno>
 #include <cstring>
@@ -77,7 +84,7 @@ void recordChange(void* mutation, const void* pointer, std::size_t bytes) {
     if (mutation != nullptr && bytes != 0) static_cast<MutationState*>(mutation)->changed.emplace_back(reinterpret_cast<std::uintptr_t>(pointer), bytes);
 }
 
-#ifndef _WIN32
+#ifdef __linux__
 std::vector<std::pair<std::uintptr_t, std::size_t>> fileBackedWritableImage() {
     const auto image = std::filesystem::read_symlink("/proc/self/exe").string();
     std::ifstream maps("/proc/self/maps");
@@ -248,6 +255,52 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
     std::map<std::uint64_t, Page> pages;
     const auto pageSize = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE));
     std::pair<std::map<std::uint64_t, Page>*, std::uint64_t> collection{&pages, pageSize};
+#ifdef __APPLE__
+    // System libraries live in the dyld shared cache, gigabytes that no guest image is part of, and
+    // __PAGEZERO reserves the low 4 GB with no access at all; neither is registered.
+    for (std::uint32_t image = 0; image < _dyld_image_count(); ++image) {
+        const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(image));
+        if (!header || header->magic != MH_MAGIC_64 || (header->flags & MH_DYLIB_IN_CACHE) != 0) continue;
+        const auto slide = static_cast<std::uint64_t>(_dyld_get_image_vmaddr_slide(image));
+        bool relinked = false;
+        {
+            const auto* scan = reinterpret_cast<const load_command*>(header + 1);
+            for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+                relinked = relinked || (scan->cmd == LC_SEGMENT_64 && std::strncmp(reinterpret_cast<const segment_command_64*>(scan)->segname, "__APS5DATA", 16) == 0);
+                scan = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(scan) + scan->cmdsize);
+            }
+        }
+        const auto* command = reinterpret_cast<const load_command*>(header + 1);
+        for (std::uint32_t index = 0; index < header->ncmds; ++index) {
+            if (command->cmd == LC_SEGMENT_64) {
+                const auto& segment = *reinterpret_cast<const segment_command_64*>(command);
+                // A relinked guest keeps its own memory in the __ELF segments; the header, the metadata and
+                // the link information around them are not guest memory, and a range the guest rounds to its
+                // 16 KiB pages must not spill into them.
+                const bool guestMemory = !relinked || std::strncmp(segment.segname, "__ELF", 5) == 0;
+                if (guestMemory && segment.vmsize != 0 && segment.initprot != VM_PROT_NONE) {
+                    const auto start = (slide + segment.vmaddr) & ~(pageSize - 1);
+                    const auto end = (slide + segment.vmaddr + segment.vmsize + pageSize - 1) & ~(pageSize - 1);
+                    for (auto page = start; page < end; page += pageSize) {
+                    mach_vm_address_t address = page;
+                    mach_vm_size_t bytes = 0;
+                    vm_region_basic_info_data_64_t info{};
+                    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+                    mach_port_t object = MACH_PORT_NULL;
+                    const auto result = mach_vm_region(mach_task_self(), &address, &bytes, VM_REGION_BASIC_INFO_64,
+                        reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+                    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+                    require(result == KERN_SUCCESS && address <= page && bytes > page - address,
+                        "cannot query native main image protection");
+                    pages[page] = {(info.protection & VM_PROT_READ) != 0, (info.protection & VM_PROT_WRITE) != 0};
+                    }
+                }
+            }
+            command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+        }
+    }
+    (void)collection;
+#else
     dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
         auto& collected = *static_cast<std::pair<std::map<std::uint64_t, Page>*, std::uint64_t>*>(data);
         for (int index = 0; index < image->dlpi_phnum; ++index) {
@@ -263,6 +316,7 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
         }
         return 1;
     }, &collection);
+#endif
     require(!pages.empty(), "main guest image has no loadable segments");
     auto replacement = state.ranges;
     for (auto page = pages.begin(); page != pages.end();) {
@@ -378,6 +432,62 @@ bool GuestAllocationsOverlaps_nid_postfix(void*, const void* pointer, std::size_
     return false;
 }
 
+// The 16 KiB pages of a guest range. A relinked guest image is linked at 16 KiB aligned addresses, but dyld
+// loads it at a multiple of the host page size only (4 KiB under Rosetta); its pages are counted from where
+// its ELF address 0 ended up, as on the console, and not from the address space. Rounded on the absolute
+// address the range of a RELRO region would reach into the writable data behind it.
+void GuestAllocationsGuestPages_nid_postfix(std::uintptr_t address, std::size_t bytes, std::size_t page, std::uintptr_t* first, std::uintptr_t* end) {
+    std::uintptr_t bias = 0;
+#ifdef __APPLE__
+    struct Search {
+        std::uintptr_t address;
+        std::uintptr_t bias;
+    } search{address, 0};
+    dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
+        auto& found = *static_cast<Search*>(data);
+        for (unsigned index = 0; index < image->dlpi_phnum; ++index) {
+            const auto& header = image->dlpi_phdr[index];
+            const auto start = static_cast<std::uintptr_t>(image->dlpi_addr + header.p_vaddr);
+            if (header.p_type == PT_LOAD && found.address >= start && found.address - start < header.p_memsz) {
+                found.bias = static_cast<std::uintptr_t>(image->dlpi_addr);
+                return 1;
+            }
+        }
+        return 0;
+    }, &search);
+    bias = search.bias;
+#endif
+    const auto mask = static_cast<std::uintptr_t>(page - 1);
+    *first = bias + ((address - bias) & ~mask);
+    *end = bias + ((address + bytes - bias + mask) & ~mask);
+}
+
+// The guest rounds the ranges it protects to its 16 KiB pages. A Mach-O image is loaded at a multiple
+// of the host page size only (4 KiB under Rosetta), so the rounded range can reach into the gap
+// between two ELF segments, which no host page backs and the registry does not know. Such an edge,
+// smaller than a guest page, is not part of the guest's request.
+void GuestAllocationsTrimToRegistered_nid_postfix(void*, const void** pointer, std::size_t* bytes) {
+#ifdef __APPLE__
+    constexpr std::uint64_t guestPage = 0x4000;
+    auto start = reinterpret_cast<std::uintptr_t>(*pointer);
+    auto end = start + *bytes;
+    const auto& ranges = registry().ranges;
+    const auto following = ranges.upper_bound(start);
+    const bool startCovered = following != ranges.begin() && std::prev(following)->first + std::prev(following)->second->bytes > start;
+    if (!startCovered && following != ranges.end() && following->first < end && following->first - start < guestPage) start = following->first;
+    const auto beyond = ranges.lower_bound(end);
+    if (beyond != ranges.begin()) {
+        const auto finish = std::prev(beyond)->first + std::prev(beyond)->second->bytes;
+        if (finish < end && finish > start && end - finish < guestPage) end = finish;
+    }
+    *pointer = reinterpret_cast<const void*>(start);
+    *bytes = end - start;
+#else
+    static_cast<void>(pointer);
+    static_cast<void>(bytes);
+#endif
+}
+
 bool GuestAllocationsCovers_nid_postfix(void*, const void* pointer, std::size_t bytes) {
     const auto address = reinterpret_cast<std::uintptr_t>(pointer);
     require(address != 0 && bytes != 0 && bytes <= std::numeric_limits<std::uint64_t>::max() - address, "invalid guest allocation range");
@@ -436,7 +546,7 @@ struct RangePatch {
 };
 
 RangePatch replaceRange(const void* pointer, std::size_t bytes, bool remove, bool readable, bool writable, bool gpu) {
-    const auto address = reinterpret_cast<std::uintptr_t>(pointer);
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pointer));
     require(bytes != 0 && bytes <= std::numeric_limits<std::uint64_t>::max() - address, "invalid guest protection or unmap range");
     require(!writable || readable, "writable guest allocation must be readable");
     const auto end = address + bytes;
@@ -456,10 +566,10 @@ RangePatch replaceRange(const void* pointer, std::size_t bytes, bool remove, boo
         const auto insert = [&](std::uint64_t first, std::uint64_t last, bool canRead, bool canWrite, bool gpuMapped) {
             if (first < last) patch.inserted.emplace_back(first, std::make_shared<const Range>(Range{first, static_cast<std::size_t>(last - first), canRead, canWrite, range.allocationAddress, range.allocationBytes, range.releasable, gpuMapped}));
         };
-        insert(base, std::max(base, address), range.readable, range.writable, range.gpu);
-        if (!remove) insert(std::max(base, address), std::min(finish, end), readable, writable, gpu);
-        insert(std::min(finish, end), finish, range.readable, range.writable, range.gpu);
-        cursor = std::min(finish, end);
+        insert(base, std::max<std::uint64_t>(base, address), range.readable, range.writable, range.gpu);
+        if (!remove) insert(std::max<std::uint64_t>(base, address), std::min<std::uint64_t>(finish, end), readable, writable, gpu);
+        insert(std::min<std::uint64_t>(finish, end), finish, range.readable, range.writable, range.gpu);
+        cursor = std::min<std::uint64_t>(finish, end);
     }
     require(cursor == end, "guest protection or unmap range is not registered");
     return patch;

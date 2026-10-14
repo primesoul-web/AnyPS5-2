@@ -61,6 +61,7 @@ int APS5_VABI sigismember_nid_postfix(const GuestSignalSet* set, int signal) {
     return (set->bits[WordIndex(signal)] & Bit(signal)) != 0 ? 1 : 0;
 }
 }
+#if defined(__x86_64__)
 #define APS5_SIGNAL_ASM_FUNCTION(name) APS5_ASM_FUNCTION(name)
 #if defined(_WIN32) || defined(__APPLE__)
 #define APS5_SIGNAL_ASM_CALL(name) "    call " APS5_ASM_SYMBOL(name) "\n"
@@ -136,3 +137,5 @@ asm(".text\n"
     "1:\n"
     "    movq %rcx, 0(%rsp)\n"
     "    ret\n");
+
+#endif
