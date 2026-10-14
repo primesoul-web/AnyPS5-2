@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <set>
 #include <condition_variable>
 #include <cstdio>
 #include <cstddef>
@@ -894,8 +895,10 @@ public:
         {
             std::unique_lock lock(mutex);
             if (threads != 0 && !closed) {
-                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared});
-                else tasks.push_back({std::move(task), prepared});
+                const auto sequence = ++submitted;
+                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence});
+                else tasks.push_back({std::move(task), prepared, sequence});
+                unfinished.insert(sequence);
                 lock.unlock();
                 ready.notify_one();
                 return;
@@ -910,6 +913,12 @@ public:
         if (found == tasks.end()) return;
         if (std::getenv("APS5_TRACE_PREPARATION_WAIT") != nullptr) std::fprintf(stderr, "[shader-prepare] demanded queued task at position %zu of %zu\n", static_cast<std::size_t>(std::distance(tasks.begin(), found)), tasks.size());
         std::rotate(tasks.begin(), found, std::next(found));
+    }
+
+    void AwaitSubmitted() {
+        std::unique_lock lock(mutex);
+        const auto ticket = submitted;
+        idle.wait(lock, [&] { return unfinished.empty() || *unfinished.begin() > ticket; });
     }
 
     void Close() {
@@ -945,14 +954,16 @@ private:
                 pool.tasks.pop_front();
                 ++pool.running;
             }
+            const auto sequence = task.sequence;
             task.function();
             task = {};
             bool drained = false;
             {
                 std::lock_guard lock(pool.mutex);
                 --pool.running;
+                pool.unfinished.erase(sequence);
                 drained = pool.tasks.empty() && pool.running == 0;
-                if (drained) pool.idle.notify_all();
+                pool.idle.notify_all();
             }
 #ifdef __GLIBC__
             if (drained) trimFreedMemory();
@@ -964,6 +975,7 @@ private:
     struct Task {
         std::function<void()> function;
         const PreparedShaders* prepared = nullptr;
+        std::uint64_t sequence = 0;
     };
 
     std::mutex mutex;
@@ -972,6 +984,8 @@ private:
     std::deque<Task> tasks;
     unsigned threads = 0;
     unsigned running = 0;
+    std::uint64_t submitted = 0;
+    std::set<std::uint64_t> unfinished;
     bool closed = false;
 };
 
@@ -1015,6 +1029,10 @@ void SubmitRegistrationPreparation(std::function<void()> task, const PreparedSha
 void PrioritizeRegistrationPreparation(PreparedShaders& prepared) {
     prepared.demanded.store(true);
     if (auto* pool = RegistrationPreparePool::Existing()) pool->Prioritize(prepared);
+}
+
+void AwaitRegistrationPreparation() {
+    if (auto* pool = RegistrationPreparePool::Existing()) pool->AwaitSubmitted();
 }
 
 void SubmitLibraryPrebuild(std::function<void()> task) {
