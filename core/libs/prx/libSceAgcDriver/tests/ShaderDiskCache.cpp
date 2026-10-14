@@ -222,6 +222,7 @@ CompiledVariant sampleVariant() {
     image.constantSwizzle = true;
     image.constantSwizzleCompatible = false;
     image.flatVolumeCompatible = false;
+    image.singleMipPlaneBiasCompatible = true;
     image.flatLineCompatible = false;
     image.foldTexelOffsetsOnly = true;
     image.byElements = 4;
