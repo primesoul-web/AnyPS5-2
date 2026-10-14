@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,21 @@ class ProgressHistoryTests(unittest.TestCase):
         self.assertEqual((short.count("rotate(60)"), short.count("<circle")), (20, 40))
         self.assertEqual((medium.count("rotate(60)"), medium.count("<circle")), (14, 0))
         self.assertEqual((long.count("rotate(60)"), long.count("<circle")), (14, 0))
+
+    def test_chart_plots_percentages(self):
+        def point(day, libraries, shaders):
+            return {"date": day,
+                    "libraries": {"done": 0, "total": 1, "percent": libraries},
+                    "shaders": {"done": 1, "total": 1, "percent": shaders}}
+        points = [point("2026-01-01", 50.0, 100.0), point("2026-01-02", 99.9, 100.0)]
+        svg = progress_history.chart(points)
+        self.assertIn("25%", svg)
+        self.assertIn("System libraries 99.9%", svg)
+        self.assertIn("GPU shader instructions 100.0%", svg)
+        self.assertIn("2026-01-02: System libraries 99.9% (0/1)", svg)
+        ys = [float(y) for y in re.findall(r'y="([\d.]+)" fill="#[0-9a-f]+" font-weight="bold"', svg)]
+        self.assertEqual(len(ys), 2)
+        self.assertGreaterEqual(abs(ys[0] - ys[1]), progress_history.LABEL_GAP - 0.1)
 
 
 if __name__ == "__main__":
