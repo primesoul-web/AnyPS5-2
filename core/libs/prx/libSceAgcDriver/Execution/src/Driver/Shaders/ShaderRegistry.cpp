@@ -430,6 +430,17 @@ void PublishRegisteredShader(std::shared_ptr<ShaderRegistry>& registry, const st
     transaction.Commit();
 }
 
+std::shared_ptr<const ShaderSnapshot> RelocateSnapshotHeader(std::shared_ptr<ShaderRegistry>& registry, const std::shared_ptr<const ShaderSnapshot>& snapshot, const Shader* shader) {
+    if (snapshot->headerAddress == reinterpret_cast<std::uintptr_t>(shader)) return snapshot;
+    GuestMemory::CheckRange(shader, shader->header_size, 1);
+    auto relocated = std::make_shared<ShaderSnapshot>(*snapshot);
+    relocated->headerAddress = reinterpret_cast<std::uintptr_t>(shader);
+    relocated->header.resize(shader->header_size);
+    std::memcpy(relocated->header.data(), static_cast<const void*>(shader), shader->header_size);
+    PublishRegisteredShader(registry, relocated);
+    return relocated;
+}
+
 namespace {
 
 void ReportPreparedAtUse(const ShaderSnapshot& snapshot, const ShaderRecompiler::RecompileRequest& request) {
@@ -1079,8 +1090,10 @@ void Driver::ResolveGraphicsStagesAbi(std::span<const Shader* const> stages, std
             require(registry != nullptr && registry->contains(address), "graphics ABI refers to an unregistered shader");
             const auto selected = RegisteredHeader(*registry, shader);
             require(selected != nullptr, "graphics ABI refers to a replaced shader header");
-            if (owner == nullptr) owner = selected;
-            const auto& snapshot = *selected;
+            const auto relocated = RelocateSnapshotHeader(shaders, selected, shader);
+            if (relocated != selected) registry = shaders;
+            if (owner == nullptr) owner = relocated;
+            const auto& snapshot = *relocated;
             require(snapshot.registeredState != nullptr, "registered shader state is missing");
             const auto registered = DecodeRegisteredState(snapshot, {});
             registered.shader.ForEach([&](std::uint32_t offset, std::uint32_t value) { state.shader.insert_or_assign(offset, value); });
@@ -1156,6 +1169,7 @@ void Driver::ResolveShaderAbi(const Shader* shader, std::span<const ShaderRegist
         require(shaders != nullptr && shaders->contains(address), "static ABI refers to an unregistered shader");
         snapshot = RegisteredHeader(*shaders, shader);
         require(snapshot != nullptr, "static ABI refers to a replaced shader header");
+        snapshot = RelocateSnapshotHeader(shaders, snapshot, shader);
     }
     require(snapshot->registeredState != nullptr, "registered shader state is missing");
     QueueState state{};
@@ -1222,8 +1236,9 @@ void Driver::ResolveGraphicsAbi(const Shader* vertex, const Shader* pixel, std::
         const auto lookup = [&](const Shader* shader) {
             const auto address = reinterpret_cast<std::uintptr_t>(const_cast<const void*>(GuestShaderFields(shader).code));
             require(shaders != nullptr && shaders->contains(address), "rectangle ABI refers to an unregistered shader");
-            const auto snapshot = RegisteredHeader(*shaders, shader);
+            auto snapshot = RegisteredHeader(*shaders, shader);
             require(snapshot != nullptr, "rectangle ABI refers to a replaced shader header");
+            snapshot = RelocateSnapshotHeader(shaders, snapshot, shader);
             return snapshot;
         };
         front = lookup(vertex);

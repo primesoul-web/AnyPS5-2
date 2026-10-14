@@ -397,6 +397,9 @@ void SharedCodeHeaders() {
     copy.sh_registers = vertex.shader.sh_registers;
     copy.target ^= 1u;
     ExpectFailure([&] { AgcDriverResolveShaderAbi_nid_postfix(&copy, {}, primitive); }, "replaced shader header");
+    Header relocated = vertex;
+    relocated.shader.user_data = &relocated.users;
+    AgcDriverResolveShaderAbi_nid_postfix(&relocated.shader, {}, primitive);
     std::vector<std::uint32_t> commands;
     for (const auto reg : vertex.registers) commands.insert(commands.end(), {0xc0017600u, reg.offset, reg.value});
     for (const auto reg : vertex.context) commands.insert(commands.end(), {0xc0016900u, reg.offset, reg.value});
@@ -483,6 +486,9 @@ void Registration(bool indirect) {
     Shader copy = header.shader;
     copy.user_data = reinterpret_cast<ShaderUserData*>(&copy);
     AgcDriverResolveShaderAbi_nid_postfix(&copy, {}, {});
+    Header fullCopy = header;
+    fullCopy.shader.user_data = reinterpret_cast<ShaderUserData*>(&fullCopy.specials);
+    AgcDriverResolveShaderAbi_nid_postfix(&fullCopy.shader, {}, {});
     alignas(Shader) std::array<std::byte, sizeof(Shader) + 4> padded{};
     auto* unaligned = padded.data() + 4;
     Require(reinterpret_cast<std::uintptr_t>(unaligned) % alignof(Shader) != 0, "shader ABI test header is unexpectedly aligned");
