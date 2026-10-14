@@ -333,8 +333,8 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
     const ShaderBufferResource heap = decodeBufferDescriptor(heapValue);
     const std::uint64_t heapSize = heap.GetSize();
     if (heap.Type() != 0u || heap.Base48() > std::numeric_limits<std::uint64_t>::max() - heapSize) throw std::runtime_error("bindless heap buffer is invalid");
-    if (heapSize != 0u && (heapSize < table.entryOffset || (heapSize - table.entryOffset) % TableEntryBytes != 0u)) throw std::runtime_error("bindless heap contains a partial descriptor");
-    const auto entries = heapSize > table.entryOffset ? static_cast<std::uint32_t>(std::min<std::uint64_t>((heapSize - table.entryOffset) / TableEntryBytes, std::numeric_limits<std::uint32_t>::max())) : 0u;
+    if (heapSize != 0u && (heapSize < table.entryOffset + TableEntryBytes || ((heapSize - table.entryOffset) % table.entryStride != 0u && (heapSize - table.entryOffset) % table.entryStride < TableEntryBytes))) throw std::runtime_error("bindless heap contains a partial descriptor");
+    const auto entries = heapSize >= table.entryOffset + TableEntryBytes ? static_cast<std::uint32_t>(std::min<std::uint64_t>((heapSize - table.entryOffset - TableEntryBytes) / table.entryStride + 1u, std::numeric_limits<std::uint32_t>::max())) : 0u;
     const auto readWord = [&](std::uint64_t address, std::uint32_t& word) {
         if (!runtime.readMemory(runtime.userContext, address, &word)) {
             throw std::runtime_error("failed to read a bindless image table from memory");
@@ -364,6 +364,7 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
                 if (offset + sizeof(std::uint32_t) > materialSize) throw std::runtime_error("bindless material selector exceeds its buffer");
                 std::uint32_t key = 0;
                 readWord(materialBase + offset, key);
+                key &= table.selectorMask;
                 if (key >= entries) {
                     outOfRange++;
                     continue;
@@ -392,7 +393,7 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
     for (std::size_t i = 0u; i < keys.size(); ++i) {
         auto& candidate = candidates[i];
         candidate.dwordCount = 8u;
-        const std::uint64_t address = heapBase + table.entryOffset + static_cast<std::uint64_t>(keys[i]) * TableEntryBytes;
+        const std::uint64_t address = heapBase + table.entryOffset + static_cast<std::uint64_t>(keys[i]) * table.entryStride;
         for (std::uint32_t dword = 0u; dword < 8u; ++dword) readWord(address + dword * sizeof(std::uint32_t), candidate.dwords[dword]);
         if (nullImageDescriptor(candidate)) {
             ++paddedNull;

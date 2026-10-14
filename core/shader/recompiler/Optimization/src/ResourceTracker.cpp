@@ -446,6 +446,15 @@ private:
             offset = immediate;
         }
         IrValue* multiply = value;
+        if (multiply->Opcode() == IrOpcode::ShiftLeftLogical32 && multiply->ArgumentCount() == 2u) {
+            std::uint32_t shift = 0;
+            if (!immediateU32(multiply->Argument(1), shift) || shift > 16u) {
+                return false;
+            }
+            stride = 1u << shift;
+            selector = multiply->Argument(0)->Resolve();
+            return selector->Opcode() == IrOpcode::ReadFirstLane;
+        }
         if (multiply->Opcode() != IrOpcode::IMul32 || multiply->ArgumentCount() != 2u) {
             return false;
         }
@@ -460,7 +469,7 @@ private:
     }
 
     // The table entry offset `key * 32` (a shift or a multiply), optionally plus an immediate.
-    static bool MatchTableOffset(IrValue* value, IrValue*& key, std::uint32_t& entryOffset) {
+    static bool MatchTableOffset(IrValue* value, IrValue*& key, std::uint32_t& entryOffset, std::uint32_t& entryStride) {
         value = value->Resolve();
         entryOffset = 0;
         if (value->Opcode() == IrOpcode::IAdd32 && value->ArgumentCount() == 2u) {
@@ -483,6 +492,7 @@ private:
                 return false;
             }
             key = value->Argument(0)->Resolve();
+            entryStride = 32u;
             return true;
         }
         if (value->Opcode() != IrOpcode::IMul32) {
@@ -495,7 +505,8 @@ private:
         } else {
             return false;
         }
-        return scale == 32u;
+        entryStride = scale;
+        return scale >= 32u && scale % sizeof(std::uint32_t) == 0u;
     }
 
     // A T# whose eight dwords are scalar reads of one V# (the table) at `entryOffset + key * 32`
@@ -538,10 +549,22 @@ private:
 
         IrValue* key = nullptr;
         std::uint32_t entryOffset = 0;
-        if (!MatchTableOffset(heapOffset, key, entryOffset) || key->Type() != IrType::U32) {
+        std::uint32_t entryStride = 0;
+        if (!MatchTableOffset(heapOffset, key, entryOffset, entryStride) || key->Type() != IrType::U32) {
             return false;
         }
         entryOffset += immediateOffset;
+        if (entryOffset + 8u * sizeof(std::uint32_t) > entryStride) {
+            return false;
+        }
+        if (entryStride != 32u) {
+            DescriptorSource direct;
+            MakeSource(handle, 8u, false, false, direct);
+            std::uint32_t badDword = 0;
+            if (ValidateSource(direct, badDword)) {
+                return false;
+            }
+        }
 
         for (const auto* read : heapReads) {
             if (!usedOnlyAsImage(*read, heapReads)) {
@@ -559,17 +582,28 @@ private:
         table.heapSource = heapSourceIndex;
         table.materialSource = heapSourceIndex;
         table.entryOffset = entryOffset;
+        table.entryStride = entryStride;
         DescriptorSource materialSource = heapSource;
+        IrValue* materialRead = key;
+        std::uint32_t selectorMask = 0xffffffffu;
+        if (key->Opcode() == IrOpcode::BitwiseAnd32 && key->ArgumentCount() == 2u) {
+            if (immediateU32(key->Argument(1), selectorMask)) {
+                materialRead = key->Argument(0)->Resolve();
+            } else if (immediateU32(key->Argument(0), selectorMask)) {
+                materialRead = key->Argument(1)->Resolve();
+            }
+        }
         std::uint32_t materialMemoryIndex = 0;
-        const MemoryInfo* materialMemory = ScalarReadMemory(*key, materialMemoryIndex);
-        if (materialMemory != nullptr && MemoryIndexBelongsTo(materialMemoryIndex, *key)) {
+        const MemoryInfo* materialMemory = ScalarReadMemory(*materialRead, materialMemoryIndex);
+        if (materialMemory != nullptr && MemoryIndexBelongsTo(materialMemoryIndex, *materialRead)) {
             IrValue* selector = nullptr;
             std::uint32_t selectorStride = 0;
             std::uint32_t selectorOffset = 0;
             DescriptorSource candidateSource;
             std::uint32_t candidateIndex = 0;
-            if (MatchMaterialOffset(key->Argument(1), selector, selectorStride, selectorOffset) && MakeRuntimeBufferSource(*key->Argument(0)->Resolve(), candidateIndex, candidateSource)) {
+            if (MatchMaterialOffset(materialRead->Argument(1), selector, selectorStride, selectorOffset) && MakeRuntimeBufferSource(*materialRead->Argument(0)->Resolve(), candidateIndex, candidateSource)) {
                 table.hasMaterial = true;
+                table.selectorMask = selectorMask;
                 table.materialSource = candidateIndex;
                 table.selectorStride = selectorStride;
                 table.selectorOffset = selectorOffset + materialMemory->offset;

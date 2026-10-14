@@ -1076,6 +1076,86 @@ void verifyBindlessTable() {
 #if ANYPS5_ENABLE_SPIRV_TOOLS
     static_cast<void>(ValidateAndOptimizeSpirv(queried->spirv, query.target.vulkanVersion, query.target.spirvVersion));
 #endif
+    static std::array<std::uint32_t, 48> strided{};
+    for (std::uint32_t entry = 0; entry < 4u; entry++) {
+        std::fill_n(strided.begin() + entry * 12u, 4u, 0xdead0000u + entry);
+        std::copy(heap[entry].begin(), heap[entry].end(), strided.begin() + entry * 12u + 4u);
+    }
+    const std::vector<std::uint32_t> stridedCode{0xf4080100u, 0xfa000000u, 0xf4080200u, 0xfa000010u, 0xf4080300u, 0xfa000020u, 0xf4080700u, 0xfa000030u, 0x7e200500u, 0x9310ff10u, 0x00000030u, 0xf42c0502u, 0x20000010u, 0xf09c0f08u, 0x00450000u, 0xe0700000u, 0x80070000u, 0xbf810000u};
+    const auto stridedHeapV = bufferDescriptor(strided.data(), 48u, 4u);
+    std::copy(stridedHeapV.begin(), stridedHeapV.end(), srt.begin());
+    auto stridedRequest = makeRequest(stridedCode);
+    const auto stridedPlan = GetResourcePlan(stridedRequest);
+    std::uint32_t stridedTables = 0;
+    for (const auto& source : stridedPlan->descriptorSources) {
+        if (!source.indirectImage.has_value()) continue;
+        stridedTables++;
+        require(!source.indirectImage->hasMaterial && source.indirectImage->entryStride == 48u && source.indirectImage->entryOffset == 16u, "bindless: the 48-byte table entries were not recorded");
+    }
+    require(stridedTables == 1, "bindless: a 48-byte table was not planned");
+    AgcDriver::ShaderMemory stridedMemory({});
+    const auto stridedCapture = stridedMemory.Capture(stridedRequest);
+    const auto stridedDirect = static_cast<std::uint32_t>(stridedPlan->info.images.size());
+    const auto stridedRoot = tableRoot(*stridedCapture, stridedDirect);
+    const auto stridedMapping = mappingOf(stridedCapture->snapshot);
+    require(std::vector<std::uint32_t>(stridedMapping.begin(), stridedMapping.begin() + 7) == std::vector<std::uint32_t>{3u, 0u, 0u, 1u, 1u, 3u, 3u}, "bindless: the 48-byte table is not the identity mapping");
+    require(stridedCapture->snapshot.images[stridedRoot].dwords == heap[0] && stridedCapture->snapshot.images[stridedDirect].dwords == heap[1] && stridedCapture->snapshot.images[stridedDirect + 1u].dwords == heap[2] && stridedCapture->snapshot.images[stridedDirect + 2u].dwords == heap[3], "bindless: the 48-byte table slots are wrong");
+    stridedRequest.context.memory = stridedMemory.Regions();
+    require(!Recompile(stridedRequest, *stridedCapture)->spirv.empty(), "bindless: the 48-byte table did not compile");
+
+    static std::array<std::uint32_t, 64> leading{};
+    for (std::uint32_t entry = 0; entry < 4u; entry++) {
+        std::copy(heap[entry].begin(), heap[entry].end(), leading.begin() + entry * 16u);
+        std::fill_n(leading.begin() + entry * 16u + 8u, 8u, 0xdead0000u + entry);
+    }
+    const std::vector<std::uint32_t> leadingCode{0xf4080100u, 0xfa000000u, 0xf4080200u, 0xfa000010u, 0xf4080300u, 0xfa000020u, 0xf4080700u, 0xfa000030u, 0x7e200500u, 0x9310ff10u, 0x00000040u, 0xf42c0502u, 0x20000000u, 0xf09c0f08u, 0x00450000u, 0xe0700000u, 0x80070000u, 0xbf810000u};
+    const auto leadingHeapV = bufferDescriptor(leading.data(), 64u, 4u);
+    std::copy(leadingHeapV.begin(), leadingHeapV.end(), srt.begin());
+    auto leadingRequest = makeRequest(leadingCode);
+    const auto leadingPlan = GetResourcePlan(leadingRequest);
+    std::uint32_t leadingTables = 0;
+    for (const auto& source : leadingPlan->descriptorSources) {
+        if (!source.indirectImage.has_value()) continue;
+        leadingTables++;
+        require(!source.indirectImage->hasMaterial && source.indirectImage->entryStride == 64u && source.indirectImage->entryOffset == 0u, "bindless: the 64-byte table entries were not recorded");
+    }
+    require(leadingTables == 1, "bindless: a 64-byte table was not planned");
+    AgcDriver::ShaderMemory leadingMemory({});
+    const auto leadingCapture = leadingMemory.Capture(leadingRequest);
+    const auto leadingDirect = static_cast<std::uint32_t>(leadingPlan->info.images.size());
+    const auto leadingRoot = tableRoot(*leadingCapture, leadingDirect);
+    require(leadingCapture->snapshot.images[leadingRoot].dwords == heap[0] && leadingCapture->snapshot.images[leadingDirect].dwords == heap[1] && leadingCapture->snapshot.images[leadingDirect + 1u].dwords == heap[2] && leadingCapture->snapshot.images[leadingDirect + 2u].dwords == heap[3], "bindless: the 64-byte table with the T# first and data behind it has wrong slots");
+    leadingRequest.context.memory = leadingMemory.Regions();
+    require(!Recompile(leadingRequest, *leadingCapture)->spirv.empty(), "bindless: the 64-byte table did not compile");
+    fillSrt(4u);
+
+    // The material program with the selector scaled by s_lshl_b32 s16, s16, 4 and the key masked
+    // by s_and_b32 s16, s16, 0x7fff before the table read: the keys enumerated from the material
+    // records are masked the same way, so 0x8001 and 0xffff8003 select entries 1 and 3.
+    const std::vector<std::uint32_t> maskedCode{0xf4080100u, 0xfa000000u, 0xf4080200u, 0xfa000010u, 0xf4080300u, 0xfa000020u, 0xf4080700u, 0xfa000030u, 0x7e200500u, 0x8f108410u, 0xf4200406u, 0x20000004u, 0x8710ff10u, 0x00007fffu, 0x8f108510u, 0xf42c0502u, 0x20000000u, 0xf09c0f08u, 0x00450000u, 0xe0700000u, 0x80070000u, 0xbf810000u};
+    materials[0][1] = 0x8001u;
+    materials[2][1] = 0xffff8003u;
+    auto maskedRequest = makeRequest(maskedCode);
+    const auto maskedPlan = GetResourcePlan(maskedRequest);
+    std::uint32_t maskedTables = 0;
+    for (const auto& source : maskedPlan->descriptorSources) {
+        if (!source.indirectImage.has_value()) continue;
+        maskedTables++;
+        const auto& table = *source.indirectImage;
+        require(table.hasMaterial && table.selectorStride == 16u && table.selectorOffset == 4u && table.selectorMask == 0x7fffu, "bindless: the shifted selector and the key mask were not recorded");
+    }
+    require(maskedTables == 1, "bindless: a table with a masked material key was not planned");
+    AgcDriver::ShaderMemory maskedMemory({});
+    const auto maskedCapture = maskedMemory.Capture(maskedRequest);
+    const auto maskedDirect = static_cast<std::uint32_t>(maskedPlan->info.images.size());
+    const auto maskedRoot = tableRoot(*maskedCapture, maskedDirect);
+    const auto maskedMapping = mappingOf(maskedCapture->snapshot);
+    require(std::vector<std::uint32_t>(maskedMapping.begin(), maskedMapping.begin() + 7) == std::vector<std::uint32_t>{3u, 0u, 0u, 1u, 1u, 3u, 2u}, "bindless: the masked material keys are wrong");
+    require(maskedCapture->snapshot.images[maskedRoot].dwords == heap[0] && maskedCapture->snapshot.images[maskedDirect].dwords == heap[1] && maskedCapture->snapshot.images[maskedDirect + 1u].dwords == heap[3], "bindless: the masked material slots are wrong");
+    maskedRequest.context.memory = maskedMemory.Regions();
+    require(!Recompile(maskedRequest, *maskedCapture)->spirv.empty(), "bindless: the masked material table did not compile");
+    materials[0][1] = 1u;
+    materials[2][1] = 3u;
 
     // A table wider than the slots without a material pattern is rejected.
     fillSrt(100u);

@@ -1355,7 +1355,7 @@ IrResourcePlan handBuiltPlan() {
     DescriptorSource table;
     table.dwordCount = 8u;
     table.dwords[0] = &readConst(3);
-    table.indirectImage = DescriptorSource::IndirectImage{3u, 2u, 16u, 4u, 2u, 32u, true};
+    table.indirectImage = DescriptorSource::IndirectImage{3u, 2u, 16u, 4u, 2u, 32u, 48u, true};
     DescriptorSource heap;
     heap.dwordCount = 4u;
     heap.dwords[1] = &readConst(6);
