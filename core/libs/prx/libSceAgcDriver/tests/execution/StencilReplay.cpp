@@ -60,7 +60,7 @@ alignas(256) constexpr std::array<std::uint32_t, 6> VertexCode{
 };
 
 alignas(256) constexpr std::array<std::uint32_t, 9> LowerHalfVertexCode{
-    0xbefe00c1u, 0xbeff0080u, 0xe0382000u, 0x80000005u, 0xbf8c3f70u,
+    0xbefe03c1u, 0xbeff0380u, 0xe0382000u, 0x80000005u, 0xbf8c3f70u,
     0xf80008cfu, 0x03020100u, 0xbf900003u, 0xbf810000u,
 };
 
