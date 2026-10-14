@@ -20,7 +20,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <filesystem>
-#else
+#elif !defined(__APPLE__)
 #include <dlfcn.h>
 #include <link.h>
 #include <mutex>
@@ -71,7 +71,7 @@ std::uint64_t PageSpan(std::uint64_t address, std::uint64_t size) {
     return ((address + size + pageMask) & ~pageMask) - (address & ~pageMask);
 }
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
 template<typename TInfo>
 struct ImageSearch {
     std::uintptr_t address;
@@ -211,7 +211,7 @@ bool SystemImage(const GuestImage& image) {
     const std::string_view path = name ? name : "";
     return !path.empty() && !path.ends_with(GuestModuleSuffix);
 }
-#else
+#elif defined(_WIN32)
 bool SectionNamed(const IMAGE_SECTION_HEADER& section, const char* name) {
     return std::strncmp(reinterpret_cast<const char*>(section.Name), name, IMAGE_SIZEOF_SHORT_NAME) == 0;
 }
@@ -356,6 +356,7 @@ bool SystemImage(const GuestImage& image) {
 }
 #endif
 
+#ifndef __APPLE__
 int FillModuleInfo(KernelModule handle, ModuleInfo* info, bool titleOnly) {
     if (!info) return SCE_KERNEL_ERROR_EFAULT;
     if (info->st_size != sizeof(ModuleInfo)) return SCE_KERNEL_ERROR_EINVAL;
@@ -386,11 +387,38 @@ int FillModuleList(KernelModule* handles, std::size_t count, std::size_t* actual
     *actual = images.size();
     return 0;
 }
+#endif
 
 }
 
 extern "C" {
 
+#ifdef __APPLE__
+int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t, int, ModuleInfoEx*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceKernelGetModuleList(KernelModule*, std::size_t, std::size_t*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceKernelGetModuleInfo(KernelModule, ModuleInfo*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+int APS5_VABI sceKernelGetModuleList2(KernelModule*, std::size_t, std::size_t*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceKernelGetModuleInfo2(KernelModule, ModuleInfo*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+#else
 int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, ModuleInfoEx* info) {
     if (!info) return SCE_KERNEL_ERROR_EFAULT;
     if (flags != 2) throw std::invalid_argument("sceKernelGetModuleInfoFromAddr: unsupported flags " + std::to_string(flags));
@@ -427,9 +455,14 @@ int APS5_VABI sceKernelGetModuleInfo(KernelModule handle, ModuleInfo* info) {
 int APS5_VABI sceKernelGetModuleInfo2(KernelModule handle, ModuleInfo* info) {
     return FillModuleInfo(handle, info, true);
 }
+#endif
 
 std::int32_t APS5_VABI sceKernelGetLibkernelTextLocation_nid_postfix(void** address, std::size_t* size) {
     if (!address || !size) throw std::invalid_argument("sceKernelGetLibkernelTextLocation: null argument");
+#ifdef __APPLE__
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+#else
     const auto images = GuestImages();
     if (images.empty()) throw std::runtime_error("sceKernelGetLibkernelTextLocation: the main program is not loaded");
     ModuleInfo info{};
@@ -445,6 +478,7 @@ std::int32_t APS5_VABI sceKernelGetLibkernelTextLocation_nid_postfix(void** addr
     *address = reinterpret_cast<void*>(static_cast<std::uintptr_t>(info.segments[0].address));
     *size = info.segments[0].size;
     return 0;
+#endif
 }
 
 std::int32_t APS5_VABI sceKernelInternalMemoryGetModuleSegmentInfo_nid_postfix(InternalSegmentInfo* result) {
@@ -458,7 +492,11 @@ std::int32_t APS5_VABI sceKernelInternalMemoryGetModuleSegmentInfo_nid_postfix(I
 }
 
 std::uint64_t GuestImageSegmentBytes_nid_no_patch() {
+#ifdef __APPLE__
+    throw std::runtime_error("GuestImageSegmentBytes: macOS guest image accounting is not implemented");
+#else
     return GuestSegmentBytes();
+#endif
 }
 
 }
