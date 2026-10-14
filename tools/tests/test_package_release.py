@@ -44,6 +44,18 @@ class ReleasePackageTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         patch.object(package_release, "ROOT", self.source, create=True).start()
 
+    def test_ngs2_archives_include_the_vgmstream_notice(self):
+        (self.source / "core/libs/prx/libSceNgs2").mkdir()
+        self.library.with_name("libSceNgs2.prx").write_bytes(b"ngs2 bytes")
+        notice = self.source / "3rdparty/vgmstream/COPYING"
+        notice.parent.mkdir(parents=True)
+        notice.write_bytes(b"vgmstream copyright and permission notice")
+        package_release.package("linux", self.build, self.output, "v1")
+        with zipfile.ZipFile(self.output / "prx-linux-v1.zip") as archive:
+            self.assertEqual(archive.read("libs/licenses/vgmstream.txt"), notice.read_bytes())
+        with tarfile.open(self.output / "prx-linux-v1.tar.gz") as archive:
+            self.assertEqual(archive.extractfile("libs/licenses/vgmstream.txt").read(), notice.read_bytes())
+
     def test_windows_runtime_follows_the_configured_compiler_directory(self):
         runtime = self.root / "custom toolchain" / "bin"
         runtime.mkdir(parents=True)

@@ -371,6 +371,7 @@ int APS5_VABI sceNgs2ParseWaveformData(const void* data, size_t data_size, Ngs2W
     *info = {};
     if (data == nullptr) return SCE_NGS2_ERROR_INVALID_WAVEFORM_DATA;
     const auto* bytes = static_cast<const std::uint8_t*>(data);
+    if (data_size >= 4 && std::memcmp(bytes, "VAGp", 4) == 0) return Ngs2ParseHevag(bytes, data_size, *info);
     RiffChunks chunks;
     const int result = ReadChunks(data_size, [bytes](std::size_t at, std::size_t) { return bytes + at; }, chunks);
     if (result != SCE_NGS2_OK) return result;
@@ -396,8 +397,13 @@ int APS5_VABI sceNgs2ParseWaveformFile(const char* path, uint32_t offset, Ngs2Wa
         return static_cast<const std::uint8_t*>(piece.data());
     };
     RiffChunks chunks;
-    int result = ReadChunks(length, readBytes, chunks);
-    if (result == SCE_NGS2_OK) result = ParseWaveform(chunks, length, *info);
+    int result;
+    if (length >= 4 && std::memcmp(readBytes(0, 4), "VAGp", 4) == 0) {
+        result = length < 0x30 ? SCE_NGS2_ERROR_INVALID_WAVEFORM_DATA : Ngs2ParseHevag(readBytes(0, 0x30), length, *info);
+    } else {
+        result = ReadChunks(length, readBytes, chunks);
+        if (result == SCE_NGS2_OK) result = ParseWaveform(chunks, length, *info);
+    }
     if (result != SCE_NGS2_OK) return result;
     info->data_offset += offset;
     for (std::uint32_t i = 0; i < info->num_blocks; i++) info->block[i].data_offset += offset;

@@ -79,6 +79,8 @@ const std::uint8_t* Ngs2StreamEnd(const Ngs2Voice& voice, const Ngs2Block& block
 const std::uint8_t* Ngs2Voice::WaveformData() const {
     if (blocks.empty()) return waveformEnd;
     const auto& block = blocks.front();
+    if (waveformType == SCE_NGS2_WAVEFORM_TYPE_VAG)
+        return block.data + ((static_cast<std::size_t>(block.info.num_skip_samples) + block.cursor) / 28) * channels * 16;
     if (waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) return block.data + block.dataCursor;
     if (block.streaming) {
         for (const auto& piece : block.pieces) {
@@ -166,10 +168,13 @@ static void ApplyCommonParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param
 static void SetupSampler(Ngs2Voice& voice, const Ngs2WaveformFormat& format) {
     voice.ResetSetup();
     if (format.waveform_type == 0 && format.num_channels == 0 && format.sample_rate == 0) return;
-    if (format.waveform_type != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L && format.waveform_type != SCE_NGS2_WAVEFORM_TYPE_ATRAC9) {
+    if (format.waveform_type != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L && format.waveform_type != SCE_NGS2_WAVEFORM_TYPE_ATRAC9 &&
+        format.waveform_type != SCE_NGS2_WAVEFORM_TYPE_VAG) {
         throw std::runtime_error("NGS2: waveform type " + Ngs2Hex(format.waveform_type) + " is not implemented");
     }
     if (format.frame_offset != 0 || format.frame_margin != 0) throw std::runtime_error("NGS2: waveform frame offset and margin are not implemented");
+    if (format.waveform_type == SCE_NGS2_WAVEFORM_TYPE_VAG && format.config_data != 0)
+        throw std::runtime_error("NGS2: HE-VAG configuration data is not implemented");
     if (format.num_channels == 0 || format.num_channels > NGS2_MAX_CHANNELS || format.sample_rate == 0) APS5_INVALID_ARG_EX;
     voice.channels = format.num_channels;
     voice.sampleRate = format.sample_rate;
@@ -178,6 +183,7 @@ static void SetupSampler(Ngs2Voice& voice, const Ngs2WaveformFormat& format) {
 }
 
 static void AppendStreamData(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBlocksParam& param, std::size_t frameBytes) {
+    if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_VAG) throw std::runtime_error("NGS2: streaming HE-VAG blocks are not implemented");
     if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) {
         const bool pendingWaveform = voice.atrac9.remainingSamples != 0 ||
             std::any_of(voice.blocks.begin(), voice.blocks.end(), [](const Ngs2Block& block) { return block.info.num_samples != 0; });
@@ -230,11 +236,13 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
         const auto& block = param.blocks[i];
         if (block.num_samples == 0 && block.data_size == 0) continue;
         if (allowsSilence && block.data_size == 0) {
+            if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_VAG) throw std::runtime_error("NGS2: dataless HE-VAG blocks are not implemented");
             if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) throw std::runtime_error("NGS2: a dataless waveform block under the silence flag is not implemented for ATRAC9 voices");
             voice.blocks.push_back({nullptr, block});
             continue;
         }
         const std::uint64_t bytes = voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9 ? Ngs2Atrac9BlockBytes(voice, block)
+                                  : voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_VAG ? ((static_cast<std::uint64_t>(block.num_skip_samples) + block.num_samples + 27) / 28) * 16 * voice.channels
                                   : (static_cast<std::uint64_t>(block.num_skip_samples) + block.num_samples) * frameBytes;
         const bool streaming = block.num_samples != 0 && bytes > block.data_size && voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_PCM_I16L &&
                                block.num_skip_samples == 0 && block.num_repeats == 0 && block.data_size >= frameBytes && block.data_size % frameBytes == 0;
@@ -243,6 +251,14 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
             throw std::invalid_argument("NGS2: waveform block " + std::to_string(i) + " does not fit its data");
         }
         voice.blocks.push_back({static_cast<const std::uint8_t*>(param.data) + block.data_offset, block});
+        if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_VAG) {
+            try {
+                Ngs2DecodeHevag(voice.blocks.back(), voice.channels);
+            } catch (...) {
+                voice.blocks.pop_back();
+                throw;
+            }
+        }
         if (streaming) {
             auto& stream = voice.blocks.back();
             stream.streaming = true;

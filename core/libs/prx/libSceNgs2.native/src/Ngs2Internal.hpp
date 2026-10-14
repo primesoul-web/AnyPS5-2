@@ -42,6 +42,7 @@ struct Ngs2Block {
     std::uint64_t availableFrames = 0;
     std::vector<Ngs2Piece> pieces;
     bool started = false;
+    std::vector<std::int16_t> decoded;
 };
 
 struct Ngs2Atrac9DecoderDeleter {
@@ -190,6 +191,8 @@ void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param);
 std::size_t Ngs2Atrac9BlockBytes(const Ngs2Voice& voice, const Ngs2WaveformBlock& block);
 void Ngs2RestartAtrac9(Ngs2Voice& voice);
 void Ngs2ConsumeAtrac9(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate);
+void Ngs2DecodeHevag(Ngs2Block& block, std::uint32_t channels);
+int Ngs2ParseHevag(const std::uint8_t* header, std::size_t size, Ngs2WaveformInfo& info);
 bool Ngs2FinishBlock(Ngs2Voice& voice);
 void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option);
 void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option);
