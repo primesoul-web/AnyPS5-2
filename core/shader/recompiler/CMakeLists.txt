@@ -260,6 +260,8 @@ function(add_shader_recompiler target runtimeTarget)
             FindUserDataCalls
             UserDataCalleeLength
             LinkUserDataCalls
+            FindTableCalls
+            LinkCalls
             WriteFileAtomically
     )
     set(shaderCacheManifest)
