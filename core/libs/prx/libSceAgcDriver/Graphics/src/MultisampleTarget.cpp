@@ -422,6 +422,11 @@ std::shared_ptr<Texture> MultisampleTargetTexture(const Context& context, const 
     throw std::runtime_error(text);
 }
 
+void MaterializeMultisampleTargetClear(const Context& context, const ColorTarget& target) {
+    std::lock_guard lock(targetsMutex());
+    acquire(context, target);
+}
+
 void ResolveMultisampleTarget(const Context& context, const ColorTarget& source, StorageTexture& destination, VkImageView destinationView) {
     std::lock_guard lock(targetsMutex());
     auto& target = acquire(context, source);

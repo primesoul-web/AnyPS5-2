@@ -2259,6 +2259,7 @@ VKAPI_ATTR VkResult VKAPI_CALL sampleLocationDepthProperties(VkPhysicalDevice, V
 
 void multisampleTests() {
     using AgcDriver::Graphics::ColorMetadataPass;
+    using AgcDriver::Graphics::DecodeColorBuffer;
     using AgcDriver::Graphics::DecodeColorMetadataPass;
     using AgcDriver::Graphics::DecodeState;
     const auto multisampled = [] {
@@ -2475,6 +2476,10 @@ void multisampleTests() {
     queue.context[0x31f] = 0;
     expectFailure([&] { DecodeState(queue); }, "without a CMASK address");
     queue = multisampled();
+    queue.context[0x31c] |= 0x10000000u;
+    expectFailure([&] { DecodeState(queue); }, "DCC over a multisampled color target is unsupported");
+    expectFailure([&] { DecodeColorBuffer(queue.context, 0); }, "DCC over a multisampled color target is unsupported");
+    queue = multisampled();
     queue.context[0x31c] |= 0x2000;
     setCmaskAddress(queue);
     std::vector<AgcDriver::Graphics::RegisterRead> reads;
@@ -2505,6 +2510,9 @@ void multisampleTests() {
     queue = rasterizedResolve;
     queue.context[0x32b] = queue.context[0x31c] ^ (1u << 8u);
     expectFailure([&] { DecodeColorMetadataPass(queue); }, "different formats or extents");
+    queue = rasterizedResolve;
+    queue.context[0x31c] |= 0x10000000u;
+    expectFailure([&] { DecodeColorMetadataPass(queue); }, "DCC over a multisampled color target is unsupported");
     queue = multisampled();
     queue.context[0x0] = 0;
     queue.context[0x202] = 0xcc0030;
@@ -2520,6 +2528,32 @@ void multisampleTests() {
     queue.context[0x0] = 0;
     queue.context[0x202] = 0xcc0020;
     expectFailure([&] { DecodeColorMetadataPass(queue); }, "multisampled color target");
+    queue.context[0x31c] |= 0x10000000u;
+    expectFailure([&] { DecodeColorMetadataPass(queue); }, "DCC over a multisampled color target is unsupported");
+    queue = multisampled();
+    queue.context[0x2f8] = 0;
+    queue.context[0x0] = 0;
+    queue.context[0x202] = 0x00cc0050;
+    queue.context[0x31c] = 0x1002e028;
+    queue.context[0x31d] = 0x00012000;
+    queue.context[0x325] = 0x2000;
+    queue.context[0x323] = 0x3f800000;
+    queue.context[0x324] = 0x3f800000;
+    setCmaskAddress(queue);
+    auto fmaskPass = DecodeColorMetadataPass(queue);
+    Require(fmaskPass.has_value() && fmaskPass->mode == ColorMetadataPass::Mode::FmaskDecompress && fmaskPass->targets.size() == 1 && fmaskPass->targets[0].samples == 4 && fmaskPass->targets[0].cmaskAddress == cmaskAddress && fmaskPass->targets[0].dccAddress != 0, "an FMASK decompress of a 4x multisampled target with CMASK and DCC did not decode");
+    Require(fmaskPass->targets[0].clearWords[0] == 0x3f800000 && fmaskPass->targets[0].clearWords[1] == 0x3f800000, "fast clear words changed");
+    queue = makeState();
+    queue.context[0x0] = 0;
+    queue.context[0x202] = 0x00cc0050;
+    expectFailure([&] { DecodeColorMetadataPass(queue); }, "over a single-sample target");
+    queue = multisampled();
+    queue.context[0x2f8] = 0;
+    queue.context[0x0] = 0;
+    queue.context[0x202] = 0x00cc0050;
+    queue.context[0x31c] = 0x00008028;
+    queue.context[0x31d] = 0x00012000;
+    expectFailure([&] { DecodeColorMetadataPass(queue); }, "FMASK decompress of a target without a CMASK address");
 
     using AgcDriver::Graphics::DccKeys;
     using AgcDriver::Graphics::MultisampledCmask;
@@ -2539,6 +2573,7 @@ void multisampleTests() {
     MultisampledCmask seeded(0x30000, 0x1000);
     seeded.SeedKeys(DccKeys::Clear0000);
     Require(seeded.TakeClear(), "a fast-cleared seed did not clear its first use");
+    Require(!seeded.TakeClear(), "a subsequent use applied the clear again");
     MultisampledCmask mixedSeed(0x30000, 0x1000);
     mixedSeed.SeedKeys(DccKeys::Mixed);
     expectFailure([&] { mixedSeed.TakeClear(); }, "not modeled");

@@ -5963,6 +5963,106 @@ void multisampleGuestAccessTests(const Device& device, Recorder& recorder) {
     std::cout << "Multisampled target guest access tests passed\n";
 }
 
+void fmaskDecompressMsaaTests(const Device& device, Recorder& recorder) {
+    const auto& base = device.GetContext();
+    if ((base.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) == 0 || base.hostImportAlignment == 0) {
+        std::cout << "4x color targets or host imports unavailable: FMASK decompress not tested\n";
+        return;
+    }
+    constexpr std::uint32_t side = 128;
+    constexpr std::size_t targetBytes = 65536u;
+    constexpr std::size_t cmaskBytes = 4096u;
+    constexpr std::size_t destBytes = targetBytes;
+    constexpr std::size_t bytes = 5u * 65536u + cmaskBytes + 2u * destBytes;
+#ifdef _WIN32
+    void* block = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+    void* block = std::aligned_alloc(65536, bytes);
+#endif
+    Require(block != nullptr, "cannot allocate the FMASK decompress block");
+    std::memset(block, 0, bytes);
+    const auto address = reinterpret_cast<std::uint64_t>(block);
+    const auto cmaskAddress = address + 5u * 65536u;
+    const auto destAddress = cmaskAddress + cmaskBytes;
+    const auto destAddress2 = destAddress + destBytes;
+    {
+        GuestAllocations::Mutation mutation;
+        mutation.Add(block, bytes, true, true, true);
+    }
+    struct Unregister {
+        const Context& context;
+        void* block;
+        ~Unregister() {
+            ClearMultisampleTargets(context.device);
+            ClearCachedTextures(context.device);
+            {
+                GuestAllocations::Mutation mutation;
+                mutation.Remove(block);
+            }
+#ifdef _WIN32
+            VirtualFree(block, 0, MEM_RELEASE);
+#else
+            std::free(block);
+#endif
+        }
+    } unregister{base, block};
+    TextureDetiler detiler(base);
+    auto context = base;
+    context.detiler = &detiler;
+    ColorTarget source{};
+    source.address = address;
+    source.surfaceAddress = address;
+    source.extent = {side, side};
+    source.surfaceExtent = source.extent;
+    source.format = VK_FORMAT_R8G8B8A8_UNORM;
+    source.elementBytes = 4;
+    source.bytes = targetBytes;
+    source.samples = 4;
+    source.cmaskAddress = cmaskAddress;
+    source.cmaskBytes = cmaskBytes;
+    source.cmaskFastClear = true;
+    source.clearWords = {0x11223344u, 0};
+    ColorTarget destination{};
+    destination.address = destAddress;
+    destination.surfaceAddress = destAddress;
+    destination.extent = {side, side};
+    destination.surfaceExtent = destination.extent;
+    destination.format = VK_FORMAT_R8G8B8A8_UNORM;
+    destination.elementBytes = 4;
+    destination.bytes = destBytes;
+    destination.samples = 1;
+    destination.tileMode = ColorTileMode::RenderTarget;
+    {
+        std::lock_guard gpu(GpuMutex());
+        RunColorMetadataPass(context, {ColorMetadataPass::Mode::FmaskDecompress, {source}});
+        auto recolored = source;
+        recolored.clearWords = {0x55667788u, 0};
+        RunColorMetadataPass(context, {ColorMetadataPass::Mode::Resolve, {destination}, recolored});
+        recorder.Submit();
+        device.WaitQueue();
+        recorder.Sync();
+    }
+    std::vector<std::uint32_t> resolved(destBytes / 4);
+    AgcDriver::GuestMemory::Read(destAddress, std::as_writable_bytes(std::span(resolved)));
+    Require(std::ranges::all_of(resolved, [](auto word) { return word == 0x11223344u; }), "FMASK decompress did not materialize the seeded clear to the host multisampled image");
+    source.clearWords = {0x55667788u, 0};
+    ColorTarget destination2 = destination;
+    destination2.address = destAddress2;
+    destination2.surfaceAddress = destAddress2;
+    {
+        std::lock_guard gpu(GpuMutex());
+        RunColorMetadataPass(context, {ColorMetadataPass::Mode::FmaskDecompress, {source}});
+        RunColorMetadataPass(context, {ColorMetadataPass::Mode::Resolve, {destination2}, source});
+        recorder.Submit();
+        device.WaitQueue();
+        recorder.Sync();
+    }
+    std::vector<std::uint32_t> resolved2(destBytes / 4);
+    AgcDriver::GuestMemory::Read(destAddress2, std::as_writable_bytes(std::span(resolved2)));
+    Require(std::ranges::all_of(resolved2, [](auto word) { return word == 0x11223344u; }), "subsequent FMASK decompress re-cleared the multisampled target");
+    std::cout << "FMASK decompress MSAA clear and resolve tests passed\n";
+}
+
 void depthSurfaceProofTests(const Device& device, Recorder& recorder) {
     const auto& base = device.GetContext();
     if (!device.NullDescriptors()) {
@@ -7376,6 +7476,7 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string_view(argv[1]) == "--multisample-only") {
             multisampleGuestAccessTests(device, recorder);
+            fmaskDecompressMsaaTests(device, recorder);
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--draw-descriptors-only") {
@@ -7418,6 +7519,7 @@ int main(int argc, char** argv) {
         readWrittenStagingTests(device, recorder);
         depthSurfaceProofTests(device, recorder);
         multisampleGuestAccessTests(device, recorder);
+        fmaskDecompressMsaaTests(device, recorder);
         misalignedSnapshotTests(device, recorder);
         misalignedRegionTests(device, recorder);
         drawSnapshotReuseTests(device, recorder);
