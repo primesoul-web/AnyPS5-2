@@ -36,6 +36,32 @@ class ProgressReadEncodingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, stderr)
         self.assertEqual(result.stdout.decode("ascii").strip(), "libSceOther")
 
+    def test_utf8_cpp_source_with_ascii_default_codec(self):
+        code_script = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import progress
+group = progress.scan_library(Path(sys.argv[2]) / "libSceExample")
+print(group.get("done"))
+"""
+        with tempfile.TemporaryDirectory(prefix="progress read cpp ") as directory:
+            root = Path(directory)
+            library = root / "libSceExample"
+            library.mkdir()
+            (library / "Source.cpp").write_bytes(
+                '// \u2010 \u2192 \u307b\u3052\nint APS5_VABI sceTest_nid_postfix() { return 0; }\n'.encode("utf-8")
+            )
+            env = {key: value for key, value in os.environ.items() if key != "PYTHONIOENCODING"}
+            env.update({"PYTHONUTF8": "0", "LC_ALL": "C", "LANG": "C"})
+            result = subprocess.run([sys.executable, "-I", "-X", "utf8=0", "-c", code_script, str(TOOLS), str(root)],
+                                    env=env, capture_output=True, timeout=20)
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        self.assertNotIn("UnicodeDecodeError", stderr)
+        self.assertEqual(result.returncode, 0, stderr)
+        self.assertEqual(result.stdout.decode("ascii").strip(), "1")
+
+
 
 if __name__ == "__main__":
     unittest.main()
