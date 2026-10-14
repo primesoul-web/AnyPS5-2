@@ -22,6 +22,8 @@
 #include <exception>
 #include <functional>
 #include <list>
+#include <map>
+#include <mutex>
 #include <atomic>
 #include <pthread.h>
 #include <sstream>
@@ -122,20 +124,35 @@ std::shared_ptr<const ShaderSnapshot> ReadRawShader(std::uint64_t address) {
 
 std::shared_ptr<const ShaderSnapshot> ProgramSnapshot(const ShaderRegistry& shaders, std::uint64_t address, std::initializer_list<std::uint8_t> types) {
     if (auto registered = RegisteredProgram(shaders, address, types)) return registered;
-    require(shaders.empty(), "graphics program does not belong to a compatible registered shader");
     return ReadRawShader(address);
 }
 
 namespace {
 std::atomic<bool> rawGraphicsDrawn{false};
+std::mutex rawGraphicsMutex;
+std::map<std::uint64_t, std::uint64_t> rawGraphicsRanges;
 }
 
-void NoteRawGraphicsDraw() {
+void NoteRawGraphicsDraw(const ShaderSnapshot& snapshot) {
+    const auto end = snapshot.codeAddress + snapshot.code.size() * sizeof(std::uint32_t);
+    {
+        std::lock_guard lock(rawGraphicsMutex);
+        auto& recorded = rawGraphicsRanges[snapshot.codeAddress];
+        recorded = std::max(recorded, end);
+    }
     rawGraphicsDrawn.store(true, std::memory_order_relaxed);
 }
 
 bool RawGraphicsDrawn() {
     return rawGraphicsDrawn.load(std::memory_order_relaxed);
+}
+
+bool RawGraphicsDrawnIn(std::uint64_t begin, std::uint64_t end) {
+    std::lock_guard lock(rawGraphicsMutex);
+    for (auto found = rawGraphicsRanges.begin(); found != rawGraphicsRanges.end() && found->first < end; ++found) {
+        if (found->second > begin) return true;
+    }
+    return false;
 }
 
 namespace {
@@ -1273,7 +1290,6 @@ void Driver::RegisterShader(const Shader* shader) {
     PerformanceTimer timing("Shader.Register");
     ShaderPreparationTransaction transaction;
     CheckFailure();
-    require(!RawGraphicsDrawn(), "a shader was registered after graphics programs were drawn without registration");
     GuestMemory::CheckRange(shader, sizeof(Shader), 1);
     Shader fields;
     std::memcpy(&fields, static_cast<const void*>(shader), sizeof(Shader));
@@ -1283,6 +1299,7 @@ void Driver::RegisterShader(const Shader* shader) {
     GuestMemory::CheckRange(shader, fields.header_size, 1);
     const auto* code = const_cast<const void*>(fields.code);
     GuestMemory::CheckRange(code, fields.shader_size, 256);
+    require(!RawGraphicsDrawnIn(reinterpret_cast<std::uintptr_t>(code), reinterpret_cast<std::uintptr_t>(code) + fields.shader_size), "a shader was registered over a graphics program that was drawn without registration");
     ShaderSnapshot snapshot{reinterpret_cast<std::uintptr_t>(code), reinterpret_cast<std::uintptr_t>(shader), fields.type, {}, {}};
     snapshot.code.resize(fields.shader_size / sizeof(std::uint32_t));
     std::memcpy(snapshot.code.data(), code, fields.shader_size);
