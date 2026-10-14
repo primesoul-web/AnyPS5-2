@@ -345,6 +345,11 @@ bool GuestSockets::WaitAny(const std::vector<Interest>& interests, std::uint64_t
     }
     if (WSAPoll(entries.data(), static_cast<ULONG>(entries.size()), timeout) == SOCKET_ERROR)
         throw std::runtime_error("equeue wait: WSAPoll failed, guest errno " + std::to_string(NativeError()));
+#elif defined(__APPLE__)
+    if (deadlineNanos != 0 && remaining < 1000000) return false;
+    const int timeout = deadlineNanos == 0 ? -1 : static_cast<int>(std::min<std::uint64_t>(remaining / 1000000, INT_MAX));
+    if (::poll(entries.data(), entries.size(), timeout) < 0 && errno != EINTR)
+        throw std::runtime_error("equeue wait: poll failed, guest errno " + std::to_string(NativeError()));
 #else
     timespec timeout{static_cast<time_t>(remaining / 1000000000), static_cast<long>(remaining % 1000000000)};
     if (::ppoll(entries.data(), entries.size(), deadlineNanos != 0 ? &timeout : nullptr, nullptr) < 0 && errno != EINTR)
@@ -583,6 +588,9 @@ int NativePair(int type, NativeSocket (&pair)[2]) {
 }
 #else
 int NativePair(int type, NativeSocket (&pair)[2]) {
+#ifdef __APPLE__
+    if (type == 5) throw std::runtime_error("socketpair: SOCK_SEQPACKET is not supported on macOS");
+#endif
     const int nativeType = type == 1 ? SOCK_STREAM : type == 2 ? SOCK_DGRAM : SOCK_SEQPACKET;
     int native[2];
     if (::socketpair(AF_UNIX, nativeType, 0, native)) return NativeError();
@@ -645,6 +653,16 @@ bool GuestSockets::Ready(int descriptor, bool write, std::int64_t* data, bool* e
 #ifdef _WIN32
     WSAPOLLFD entry{socket->value, static_cast<SHORT>(write ? POLLWRNORM : POLLRDNORM), 0};
     if (WSAPoll(&entry, 1, 0) <= 0) return false;
+#elif defined(__APPLE__)
+    pollfd entry{socket->value, static_cast<short>(write ? POLLOUT : POLLIN), 0};
+    if (::poll(&entry, 1, 0) <= 0) return false;
+    if (!write && (entry.revents & POLLIN) != 0) {
+        int type = 0;
+        socklen_t bytes = sizeof(type);
+        char value;
+        if (getsockopt(socket->value, SOL_SOCKET, SO_TYPE, &type, &bytes) == 0 && type == SOCK_STREAM &&
+            recv(socket->value, &value, 1, MSG_PEEK | MSG_DONTWAIT) == 0) entry.revents |= POLLHUP;
+    }
 #else
     pollfd entry{socket->value, static_cast<short>(write ? POLLOUT : (POLLIN | POLLRDHUP)), 0};
     if (::poll(&entry, 1, 0) <= 0) return false;
@@ -984,7 +1002,15 @@ int APS5_VABI ioctl_nid_postfix(int descriptor, std::uint64_t request, void* arg
     const auto result = ioctlsocket(socket->value, request == 0x8004667e ? FIONBIO : FIONREAD, &value);
 #else
     int nativeValue = static_cast<int>(value);
+#ifdef __APPLE__
+    // macOS FIONREAD also counts each datagram's source address; SO_NREAD is the next datagram's size.
+    socklen_t valueSize = sizeof(nativeValue);
+    const auto result = request == 0x4004667f && socket->type == 2
+        ? ::getsockopt(socket->value, SOL_SOCKET, SO_NREAD, &nativeValue, &valueSize)
+        : ::ioctl(socket->value, request == 0x8004667e ? FIONBIO : FIONREAD, &nativeValue);
+#else
     const auto result = ::ioctl(socket->value, request == 0x8004667e ? FIONBIO : FIONREAD, &nativeValue);
+#endif
     value = static_cast<unsigned long>(nativeValue);
 #endif
     if (result) return Fail(NativeError());

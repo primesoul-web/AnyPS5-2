@@ -13,6 +13,30 @@
 #include <utility>
 #include <vector>
 
+#ifdef __APPLE__
+void RequireVnodeNotes(std::uint32_t) {
+    NotImplemented_nid_no_patch("EVFILT_VNODE on macOS");
+}
+
+void SetVnodeNotes(KernelEqueueEvent&, std::uint32_t) {
+    NotImplemented_nid_no_patch("EVFILT_VNODE on macOS");
+}
+
+int AddVnodeEvent(const KernelEqueueRef&, int, std::uint32_t, std::uint16_t, void*) {
+    NotImplemented_nid_no_patch("EVFILT_VNODE on macOS");
+    return 0;
+}
+
+extern "C" int APS5_VABI sceKernelAddFileEvent(KernelEqueue, int, int, void*) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+extern "C" int APS5_VABI sceKernelDeleteFileEvent(KernelEqueue, int) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+#else
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
@@ -660,3 +684,5 @@ int APS5_VABI sceKernelDeleteFileEvent(KernelEqueue eq, int fd) {
 }
 
 }
+
+#endif
