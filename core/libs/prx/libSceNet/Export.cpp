@@ -36,6 +36,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libkernel/Socket/include/SocketPoll.hpp"
+#include "prx/libkernel/Socket/include/SocketConnect.hpp"
 
 // Guest socket descriptors retain PS5 semantics while their transport is backed by host sockets.
 
@@ -828,6 +829,9 @@ int APS5_VABI sceNetConnect(int s, const void* addr, uint32_t addrlen) {
     NativeLength native_length = 0;
     if (!guest_to_native_address(addr, addrlen, native, native_length)) return fail(NET_EINVAL);
     if (native.ss_family != (socket.family == NET_AF_INET ? AF_INET : AF_INET6)) return fail(NET_EAFNOSUPPORT);
+#ifdef _WIN32
+    if (socket.type == NET_SOCK_STREAM) KernelSocketConnect::RefuseLoopbackAtOnce(socket.native->value, reinterpret_cast<const sockaddr*>(&native));
+#endif
     if (::connect(socket.native->value, reinterpret_cast<const sockaddr*>(&native), native_length) == 0) return 0;
 #ifdef _WIN32
     if (WSAGetLastError() == WSAEWOULDBLOCK) return fail(NET_EINPROGRESS);
