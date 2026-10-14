@@ -225,10 +225,14 @@ int APS5_VABI vasprintf_nid_postfix(char** destination, const char* format, VaLi
         const int count = guestWide ? LibcDetail::FormatWindows(nullptr, 0, format, args, &guestText) : ::vasprintf(&text, format, copy);
         va_end(copy);
         std::unique_ptr<char, decltype(&std::free)> owner(text, std::free);
-        if (count < 0) return -1;
         const char* source = guestWide ? guestText.c_str() : text;
 #endif
+        if (count < 0) return -1;
         auto* output = static_cast<char*>(ApplicationHeapAllocate_nid_no_patch(static_cast<size_t>(count) + 1));
+        if (!output) {
+            errno = 12;
+            return -1;
+        }
         std::memcpy(output, source, static_cast<size_t>(count) + 1);
         *destination = output;
         return count;
@@ -243,12 +247,14 @@ int APS5_VABI vfprintf_nid_postfix(FileStream* stream, const char* format, VaLis
 #ifdef _WIN32
     std::string buffer;
     const int count = LibcDetail::FormatWindows(nullptr, 0, format, args, &buffer);
+    if (count < 0) return -1;
     const int result = std::fwrite(buffer.data(), 1, static_cast<size_t>(count), native) ==
         static_cast<size_t>(count) ? count : -1;
 #else
     if (HasGuestWideFormat(format)) {
         std::string buffer;
         const int count = LibcDetail::FormatWindows(nullptr, 0, format, args, &buffer);
+        if (count < 0) return -1;
         const int result = std::fwrite(buffer.data(), 1, static_cast<size_t>(count), native) == static_cast<size_t>(count) ? count : -1;
         stream->SyncStatus();
         return result;
