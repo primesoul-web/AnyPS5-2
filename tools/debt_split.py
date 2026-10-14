@@ -85,7 +85,7 @@ def write_debt(root, name, sections, order):
             path.unlink()
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render(f"# {name} technical debt", sections, order), encoding="utf-8")
+    path.write_text(render(f"# {name} technical debt", sections, order), encoding="utf-8", newline="\n")
 
 
 def sections_of(text):
@@ -132,7 +132,7 @@ def command_split(root):
         write_debt(root, name, existing, order)
     if index_note() not in index:
         index.insert(1, index_note())
-    (root / INDEX).write_text(render_index(index), encoding="utf-8")
+    (root / INDEX).write_text(render_index(index), encoding="utf-8", newline="\n")
     print("\n".join(sorted(debt_file(name) for name in files)))
 
 
@@ -215,7 +215,7 @@ def command_resolve(root):
         touched = apply_change(root, base, theirs, ours)
     except LookupError as error:
         sys.exit(str(error))
-    (root / INDEX).write_text(ours, encoding="utf-8")
+    (root / INDEX).write_text(ours, encoding="utf-8", newline="\n")
     git(root, "add", "--", INDEX, *touched)
     print("\n".join(touched))
 
