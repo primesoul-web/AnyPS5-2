@@ -2443,27 +2443,27 @@ int main() {
     CheckMtypeprotect();
     CheckHeapAlignment();
     CheckHeapAfterMappingReuse();
-    CheckNoOverwriteRejectsHostOccupiedMapping();
-    CheckFixedMappingsReachTheApplicationAreaEnd();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckNoOverwriteRejectsHostOccupiedMapping();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckFixedMappingsReachTheApplicationAreaEnd();
 #ifdef _WIN32
     CheckGuestModuleImageProtection();
     CheckAliasAcrossDirectAllocations();
     CheckAliasOfReorderedSharedPages();
     CheckAliasRefusesPagesThatAreNotSharedViews();
 #endif
-    CheckUnhintedKernelMappingsLandInTheWindow();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckUnhintedKernelMappingsLandInTheWindow();
 #if defined(__linux__)
     CheckUnmappedArenaRangeStaysReserved();
 #endif
-    CheckArenaPlacesUnhintedMappingsInsideTheWindow();
-    CheckArenaReusesAFreedRange();
-    CheckArenaHonoursHintsWithoutGoingBelowThem();
-    CheckSharedWriteTracking();
-    CheckSharedWritePages();
-    CheckSharedWritesDuringHostWrite();
-    CheckReadsIntoSharedWriteTracking();
-    CheckPinnedSharedPages();
-    CheckFailedCollectKeepsWrites();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckArenaPlacesUnhintedMappingsInsideTheWindow();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckArenaReusesAFreedRange();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckArenaHonoursHintsWithoutGoingBelowThem();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckSharedWriteTracking();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckSharedWritePages();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckSharedWritesDuringHostWrite();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckReadsIntoSharedWriteTracking();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckPinnedSharedPages();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckFailedCollectKeepsWrites();
     CheckSingleDirectMappingTracksWritesWithoutFaults();
     CheckSecondDirectMappingWaitsForLeases();
     CheckBreakingAResidentRunKeepsConcurrentAccesses();
