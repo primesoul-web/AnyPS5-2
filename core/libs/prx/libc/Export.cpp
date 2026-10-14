@@ -24,7 +24,12 @@ int APS5_VABI _ZSt14_Atomic_assertPKcS0__nid_postfix() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
 }
+int APS5_VABI __cxa_thread_atexit_impl_nid_postfix(void (APS5_VABI *func)(void*), void* arg, void* dso);
 
+APS5_EXPORT("BKSCW2bCACA", libc___cxa_thread_atexit);
+int APS5_VABI libc___cxa_thread_atexit(void (APS5_VABI *func)(void*), void* arg, void* dso) {
+        return __cxa_thread_atexit_impl_nid_postfix(func, arg, dso);
+    }
 
 APS5_EXPORT("H2e8t5ScQGc", libc___cxa_finalize);
 void APS5_VABI libc___cxa_finalize(void* dsoHandle) {
