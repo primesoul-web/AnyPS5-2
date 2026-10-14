@@ -152,6 +152,29 @@ struct ImportFailure {
     GuestAllocations::Mapped ranges;
 };
 
+// The command pool, fence and 4-byte scratch buffer that use new dma-buf imports on the GPU
+// (touchDmaBufImports), made once per device and released with its imports.
+struct DmaBufTouch {
+    VkDevice device = VK_NULL_HANDLE;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkBuffer scratch = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    PFN_vkDestroyFence destroyFence = nullptr;
+    PFN_vkDestroyCommandPool destroyPool = nullptr;
+    PFN_vkDestroyBuffer destroyBuffer = nullptr;
+    PFN_vkFreeMemory freeMemory = nullptr;
+};
+
+void releaseTouch(DmaBufTouch& touch) {
+    if (touch.fence != VK_NULL_HANDLE) touch.destroyFence(touch.device, touch.fence, nullptr);
+    if (touch.pool != VK_NULL_HANDLE) touch.destroyPool(touch.device, touch.pool, nullptr);
+    if (touch.scratch != VK_NULL_HANDLE) touch.destroyBuffer(touch.device, touch.scratch, nullptr);
+    if (touch.memory != VK_NULL_HANDLE) touch.freeMemory(touch.device, touch.memory, nullptr);
+    touch = DmaBufTouch{};
+}
+
 // Imports persist across draws, keyed by allocation base, and are dropped when their allocation leaves
 // the registered set; a dropped import is destroyed once the recorded work that may read it completed.
 struct HostImports {
@@ -177,6 +200,10 @@ struct HostImports {
     bool unwatchDmaBufImports = false;
     std::uint64_t useCounter = 0;
     std::uint64_t buildFloor = 0;
+    DmaBufTouch touch;
+    // Dma-buf imports made at map time while another thread held the GPU mutex, first used on the GPU
+    // by the queue worker (TouchDeferredDmaBufImports).
+    std::vector<std::uint64_t> untouched;
 };
 
 HostImports& Imports() {
@@ -1112,6 +1139,7 @@ void refreshImports(const Context& context, HostImports& state, const GuestAlloc
         state.failedJoins.clear();
         state.sparseRunEnds.clear();
         state.sparseRunJoins.clear();
+        state.untouched.clear();
         state.device = context.device;
         state.destroyBuffer = context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer");
         state.freeMemory = context.Function<PFN_vkFreeMemory>("vkFreeMemory");
@@ -2093,6 +2121,7 @@ void ClearHostImports(VkDevice device) {
     auto& state = Imports();
     std::lock_guard lock(state.mutex);
     state.parked.erase(device);
+    if (state.touch.device == device) releaseTouch(state.touch);
     if (state.device != device) return;
     for (const auto& [address, entry] : state.imports) {
         state.destroyBuffer(state.device, entry.buffer, nullptr);
@@ -2102,6 +2131,7 @@ void ClearHostImports(VkDevice device) {
 #endif
     }
     state.imports.clear();
+    state.untouched.clear();
     state.liveBytes = 0;
     state.failed.clear();
     state.failedJoins.clear();
@@ -2324,27 +2354,31 @@ const HostImport* HostImportFor(const Context& context, std::uint64_t address, s
     return importAccess(context, state, address, address + bytes, lease);
 }
 
-std::atomic<std::uint64_t> mappedDmaBufImportsTouched{0};
+struct DmaBufTouchCounters {
+    std::atomic<std::uint64_t> atMap{0};
+    std::atomic<std::uint64_t> deferred{0};
+    std::atomic<std::uint64_t> byWorker{0};
+    std::atomic<std::uint64_t> dropped{0};
+};
 
-void touchDmaBufImports(const Context& context, const HostImports& state, const std::vector<std::uint64_t>& bases) {
-    std::vector<VkBuffer> sources;
-    for (const auto base : bases) {
-        if (const auto found = state.imports.find(base); found != state.imports.end() && found->second.dmaBuf && found->second.buffer != VK_NULL_HANDLE) sources.push_back(found->second.buffer);
-    }
-    if (sources.empty()) return;
-    VkCommandPool pool = VK_NULL_HANDLE;
-    VkBuffer scratch = VK_NULL_HANDLE;
-    VkDeviceMemory scratchMemory = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
-    const auto release = [&] {
-        if (fence != VK_NULL_HANDLE) context.Function<PFN_vkDestroyFence>("vkDestroyFence")(context.device, fence, nullptr);
-        if (pool != VK_NULL_HANDLE) context.Function<PFN_vkDestroyCommandPool>("vkDestroyCommandPool")(context.device, pool, nullptr);
-        if (scratch != VK_NULL_HANDLE) context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer")(context.device, scratch, nullptr);
-        if (scratchMemory != VK_NULL_HANDLE) context.Function<PFN_vkFreeMemory>("vkFreeMemory")(context.device, scratchMemory, nullptr);
-    };
+DmaBufTouchCounters& touchCounters() {
+    static DmaBufTouchCounters counters;
+    return counters;
+}
+
+std::atomic<bool> untouchedPending{false};
+
+void prepareTouch(const Context& context, DmaBufTouch& touch) {
+    if (touch.device == context.device && touch.fence != VK_NULL_HANDLE) return;
+    if (touch.device != context.device) touch = DmaBufTouch{};
+    touch.device = context.device;
+    touch.destroyFence = context.Function<PFN_vkDestroyFence>("vkDestroyFence");
+    touch.destroyPool = context.Function<PFN_vkDestroyCommandPool>("vkDestroyCommandPool");
+    touch.destroyBuffer = context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer");
+    touch.freeMemory = context.Function<PFN_vkFreeMemory>("vkFreeMemory");
     const auto check = [&](VkResult result, const char* step) {
         if (result == VK_SUCCESS) return;
-        release();
+        releaseTouch(touch);
         char text[160];
         std::snprintf(text, sizeof(text), "AGC graphics: first use of mapped dma-buf imports failed at %s (%d)", step, static_cast<int>(result));
         throw std::runtime_error(text);
@@ -2352,47 +2386,94 @@ void touchDmaBufImports(const Context& context, const HostImports& state, const 
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     poolInfo.queueFamilyIndex = context.queueFamily;
-    check(context.Function<PFN_vkCreateCommandPool>("vkCreateCommandPool")(context.device, &poolInfo, nullptr, &pool), "vkCreateCommandPool");
+    check(context.Function<PFN_vkCreateCommandPool>("vkCreateCommandPool")(context.device, &poolInfo, nullptr, &touch.pool), "vkCreateCommandPool");
+    VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocate.commandPool = touch.pool;
+    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate.commandBufferCount = 1;
+    check(context.Function<PFN_vkAllocateCommandBuffers>("vkAllocateCommandBuffers")(context.device, &allocate, &touch.command), "vkAllocateCommandBuffers");
     VkBufferCreateInfo scratchInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     scratchInfo.size = 4;
     scratchInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     scratchInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    check(context.Function<PFN_vkCreateBuffer>("vkCreateBuffer")(context.device, &scratchInfo, nullptr, &scratch), "vkCreateBuffer");
+    check(context.Function<PFN_vkCreateBuffer>("vkCreateBuffer")(context.device, &scratchInfo, nullptr, &touch.scratch), "vkCreateBuffer");
     VkMemoryRequirements requirements{};
-    context.Function<PFN_vkGetBufferMemoryRequirements>("vkGetBufferMemoryRequirements")(context.device, scratch, &requirements);
+    context.Function<PFN_vkGetBufferMemoryRequirements>("vkGetBufferMemoryRequirements")(context.device, touch.scratch, &requirements);
     check(requirements.memoryTypeBits != 0 ? VK_SUCCESS : VK_ERROR_FORMAT_NOT_SUPPORTED, "the scratch memory type");
     VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     allocation.allocationSize = requirements.size;
     allocation.memoryTypeIndex = static_cast<std::uint32_t>(std::countr_zero(requirements.memoryTypeBits));
-    check(context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &scratchMemory), "vkAllocateMemory");
-    check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, scratch, scratchMemory, 0), "vkBindBufferMemory");
-    VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    allocate.commandPool = pool;
-    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocate.commandBufferCount = 1;
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    check(context.Function<PFN_vkAllocateCommandBuffers>("vkAllocateCommandBuffers")(context.device, &allocate, &command), "vkAllocateCommandBuffers");
+    check(context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &touch.memory), "vkAllocateMemory");
+    check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, touch.scratch, touch.memory, 0), "vkBindBufferMemory");
+    const VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    check(context.Function<PFN_vkCreateFence>("vkCreateFence")(context.device, &fenceInfo, nullptr, &touch.fence), "vkCreateFence");
+}
+
+// Copies 4 bytes from each of the dma-buf imports at `bases` that still exist and waits, so the
+// kernel maps their pages for the GPU now; returns how many it used. Under the GPU mutex and the
+// import state's mutex.
+std::size_t touchDmaBufImports(const Context& context, HostImports& state, const std::vector<std::uint64_t>& bases, const char* site) {
+    std::vector<VkBuffer> sources;
+    std::uint64_t bytes = 0;
+    for (const auto base : bases) {
+        if (const auto found = state.imports.find(base); found != state.imports.end() && found->second.dmaBuf && found->second.buffer != VK_NULL_HANDLE) {
+            sources.push_back(found->second.buffer);
+            bytes += found->second.bytes;
+        }
+    }
+    if (sources.empty()) return 0;
+    static const bool trace = std::getenv("APS5_TRACE_HOST_IMPORT") != nullptr;
+    const auto start = std::chrono::steady_clock::now();
+    prepareTouch(context, state.touch);
+    auto& touch = state.touch;
+    const auto check = [&](VkResult result, const char* step) {
+        if (result == VK_SUCCESS) return;
+        char text[160];
+        std::snprintf(text, sizeof(text), "AGC graphics: first use of mapped dma-buf imports failed at %s (%d)", step, static_cast<int>(result));
+        throw std::runtime_error(text);
+    };
+    check(context.Function<PFN_vkResetCommandPool>("vkResetCommandPool")(context.device, touch.pool, 0), "vkResetCommandPool");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    check(context.Function<PFN_vkBeginCommandBuffer>("vkBeginCommandBuffer")(command, &begin), "vkBeginCommandBuffer");
+    check(context.Function<PFN_vkBeginCommandBuffer>("vkBeginCommandBuffer")(touch.command, &begin), "vkBeginCommandBuffer");
     const VkBufferCopy region{0, 0, 4};
-    for (const auto source : sources) context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(command, source, scratch, 1, &region);
-    check(context.Function<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(command), "vkEndCommandBuffer");
-    const VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    check(context.Function<PFN_vkCreateFence>("vkCreateFence")(context.device, &fenceInfo, nullptr, &fence), "vkCreateFence");
+    for (const auto source : sources) context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(touch.command, source, touch.scratch, 1, &region);
+    check(context.Function<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(touch.command), "vkEndCommandBuffer");
+    check(context.Function<PFN_vkResetFences>("vkResetFences")(context.device, 1, &touch.fence), "vkResetFences");
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &command;
-    check(context.Function<PFN_vkQueueSubmit>("vkQueueSubmit")(context.queue, 1, &submit, fence), "vkQueueSubmit");
-    check(context.Function<PFN_vkWaitForFences>("vkWaitForFences")(context.device, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
-    release();
-    mappedDmaBufImportsTouched.fetch_add(sources.size(), std::memory_order_relaxed);
+    submit.pCommandBuffers = &touch.command;
+    check(context.Function<PFN_vkQueueSubmit>("vkQueueSubmit")(context.queue, 1, &submit, touch.fence), "vkQueueSubmit");
+    check(context.Function<PFN_vkWaitForFences>("vkWaitForFences")(context.device, 1, &touch.fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+    if (trace) std::fprintf(stderr, "[gpu] first GPU use of %zu dma-buf imports made at map time (%.1f MiB) %s: %.1f ms\n", sources.size(), bytes / 1048576.0, site, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    return sources.size();
 }
 
 bool importMappedRanges(const Context& context, HostImports& state, const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice, std::vector<std::uint64_t>& made);
 
-std::uint64_t MappedDmaBufImportsTouched() {
-    return mappedDmaBufImportsTouched.load(std::memory_order_relaxed);
+MappedDmaBufTouchStats MappedDmaBufTouches() {
+    const auto& counters = touchCounters();
+    const auto load = [](const std::atomic<std::uint64_t>& counter) { return counter.load(std::memory_order_relaxed); };
+    return {load(counters.atMap), load(counters.deferred), load(counters.byWorker), load(counters.dropped)};
+}
+
+bool MappedDmaBufTouchPending() {
+    return untouchedPending.load(std::memory_order_acquire);
+}
+
+void TouchDeferredDmaBufImports(const Context& context) {
+    if (!untouchedPending.load(std::memory_order_acquire)) return;
+    GuestMemory::AssertGpuLockHeld("TouchDeferredDmaBufImports");
+    auto& state = Imports();
+    std::lock_guard lock(state.mutex);
+    std::vector<std::uint64_t> bases;
+    bases.swap(state.untouched);
+    untouchedPending.store(false, std::memory_order_release);
+    if (bases.empty()) return;
+    const auto touched = state.device == context.device ? touchDmaBufImports(context, state, bases, "by the queue worker") : 0;
+    auto& counters = touchCounters();
+    counters.byWorker.fetch_add(touched, std::memory_order_relaxed);
+    counters.dropped.fetch_add(bases.size() - touched, std::memory_order_relaxed);
 }
 
 bool ImportMappedRanges(const Context& context, const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice) {
@@ -2406,10 +2487,19 @@ bool ImportMappedRanges(const Context& context, const GuestAllocations::Mapped& 
         imported = importMappedRanges(context, state, ranges, generation, adoptDevice, made);
     }
     if (made.empty()) return imported;
+    auto& counters = touchCounters();
     std::unique_lock<GuestMemory::GpuMutexType> gpu(GuestMemory::GpuMutex(), std::defer_lock);
-    if (!GuestMemory::GpuMutex().HeldByThisThread() && !gpu.try_lock()) return imported;
+    if (!GuestMemory::GpuMutex().HeldByThisThread() && !gpu.try_lock()) {
+        std::lock_guard lock(state.mutex);
+        state.untouched.insert(state.untouched.end(), made.begin(), made.end());
+        untouchedPending.store(true, std::memory_order_release);
+        const auto deferred = counters.deferred.fetch_add(made.size(), std::memory_order_relaxed) + made.size();
+        static std::atomic<std::uint32_t> reported{0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 8) std::fprintf(stderr, "[gpu] %zu dma-buf imports made at map time are first used on the GPU by the queue worker: another thread holds the GPU mutex (%llu so far)\n", made.size(), static_cast<unsigned long long>(deferred));
+        return imported;
+    }
     std::lock_guard lock(state.mutex);
-    touchDmaBufImports(context, state, made);
+    counters.atMap.fetch_add(touchDmaBufImports(context, state, made, "at the map"), std::memory_order_relaxed);
     return imported;
 }
 

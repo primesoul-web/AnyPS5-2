@@ -58,6 +58,9 @@ public:
     void WaitIdle();
     void PrepareForReplacement();
     bool ImportGuestMemory(const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice);
+    // Under the GPU mutex: uses on the GPU the dma-buf imports made at map time while another thread
+    // held it (Graphics::TouchDeferredDmaBufImports).
+    void TouchDeferredImports();
     // Sends recorded work to the GPU without waiting for it. With `reapFirst` it first retires batches
     // that already finished, so the in-flight list stays short (APS5_NO_OPPORTUNISTIC_REAP=1 skips
     // that). A reap runs completion actions, and a write-back can wait for a later batch under the

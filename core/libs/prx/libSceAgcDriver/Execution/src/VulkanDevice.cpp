@@ -1836,6 +1836,10 @@ bool VulkanDevice::ImportGuestMemory(const GuestAllocations::Mapped& ranges, std
     return Graphics::ImportMappedRanges(graphicsContext(), ranges, generation, adoptDevice);
 }
 
+void VulkanDevice::TouchDeferredImports() {
+    Graphics::TouchDeferredDmaBufImports(graphicsContext());
+}
+
 void VulkanDevice::PrepareForReplacement() {
     GuestMemory::AssertGpuLockHeld("VulkanDevice::PrepareForReplacement");
     require(state->recorder != nullptr && Graphics::Recorder::Active() == state->recorder.get(), "device replacement requires its active recorder");
