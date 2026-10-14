@@ -34,7 +34,16 @@ static void RequireRunning() {
 }
 
 int main() {
+    Require(sceSaveDataDialogGetStatus() == SAVE_DATA_DIALOG_STATUS_NONE, "initial status");
+    Require(sceSaveDataDialogTerminate() == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "terminate before init");
+    Require(sceSaveDataDialogClose(nullptr) == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "close before init");
+    SaveDataDialogResult uninitResult{};
+    Require(sceSaveDataDialogGetResult(&uninitResult) == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "get result before init");
+
     Require(sceSaveDataDialogInitialize() == 0, "initialize");
+    Require(sceSaveDataDialogInitialize() == SAVE_DATA_DIALOG_ERROR_ALREADY_INITIALIZED, "double init");
+    Require(sceSaveDataDialogClose(nullptr) == SAVE_DATA_DIALOG_ERROR_INVALID_STATE, "close while initialized not running");
+    Require(sceSaveDataDialogGetResult(&uninitResult) == SAVE_DATA_DIALOG_ERROR_INVALID_STATE, "get result before open");
 
     SaveDataDirName names[2]{{}, {"SDU1"}};
     SaveDataDialogItems items{};
@@ -57,6 +66,8 @@ int main() {
         RequireRunning();
         Require(sceSaveDataDialogProgressBarSetValue(0, 100) == 0, "complete progress");
         RequireRunning();
+        Require(sceSaveDataDialogGetResult(&uninitResult) == SAVE_DATA_DIALOG_ERROR_INVALID_STATE,
+                "get result while running");
         Require(sceSaveDataDialogClose(nullptr) == 0, "close save progress");
         Require(sceSaveDataDialogUpdateStatus() == SAVE_DATA_DIALOG_STATUS_FINISHED,
                 "closing save progress must finish it");
@@ -74,5 +85,6 @@ int main() {
     Require(sceSaveDataDialogUpdateStatus() == SAVE_DATA_DIALOG_STATUS_FINISHED,
             "selection dialog must retain the existing automatic response");
     Require(sceSaveDataDialogTerminate() == 0, "terminate");
+    Require(sceSaveDataDialogTerminate() == SAVE_DATA_DIALOG_ERROR_NOT_INITIALIZED, "terminate when already terminated");
     Require(sceSaveDataDialogGetStatus() == SAVE_DATA_DIALOG_STATUS_NONE, "terminated state");
 }
