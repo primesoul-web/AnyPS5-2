@@ -109,6 +109,10 @@ RdnaImageDimension descriptorDimension(const DescriptorValue& descriptor, RdnaIm
     }
 }
 
+bool nonImageDescriptor(const DescriptorValue& descriptor) {
+    return static_cast<std::uint32_t>(rawImageType(descriptor)) <= 1u;
+}
+
 bool validImageDescriptor(const DescriptorValue& descriptor, bool r128) {
     const auto type = rawImageType(descriptor);
     const auto format = rawImageFormat(descriptor);
@@ -726,7 +730,7 @@ void materializeSnapshot(const IrResourcePlan& plan, const SrtRuntime& runtime, 
             throw std::runtime_error("image descriptor has an invalid width");
         }
         const auto activity = plan.descriptorSources.size() + i;
-        if (activity < activeSources.size() && activeSources[activity] == 0u) {
+        if ((activity < activeSources.size() && activeSources[activity] == 0u) || nonImageDescriptor(descriptor)) {
             descriptor = DescriptorValue{};
             descriptor.dwordCount = 8u;
         }
