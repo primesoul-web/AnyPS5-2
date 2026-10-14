@@ -38,6 +38,9 @@ def main():
                              "callSites": ["0x200"], "callSitesResolved": True}]
                 if entries != expected:
                     raise AssertionError((name, options, entries))
+                needed = json.loads(output.with_suffix(".needed.json").read_text(encoding="utf-8"))
+                if needed != ["lib.so"]:
+                    raise AssertionError((name, options, needed))
     print("Call registry JSON tests passed")
 
 

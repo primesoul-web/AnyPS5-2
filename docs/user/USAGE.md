@@ -212,7 +212,9 @@ python3 tools/import_audit.py app.registry.json app.libc.prx.guest.prx.registry.
 
 Each `--modules` file is also audited itself: its undefined symbols are classified against the built libraries and the other modules' exports, with the module file named in the report, and the libraries it needs must have a file in `--libs` or `--modules`. The audit reads dynamic tables from ELF section headers or, for sectionless files, from `PT_DYNAMIC` and a SysV or GNU hash table.
 
-The report also lists needed libraries that have no file in `--libs` or `--modules`, and imports exported only by a library other than the one they name; those resolve on Linux and can fail on Windows.
+Each registry has a companion with the same prefix and the suffix `.needed.json`, listing its host library dependencies, including declared `DT_NEEDED` entries with no imports. Dependencies supplied by converted bundled modules, including their aliases, are omitted. The executable's companion includes host dependencies of its bundled modules. The audit reads these companions automatically; keep them beside the registries. Older registries without companions still work, but cannot report dependencies that have no imports; regenerate them with `--registry` to include those dependencies.
+
+The report also lists needed libraries that have no file in `--libs` or `--modules`, including dependencies with zero imports. These do not increase the import or reference counts. Windows can skip a missing dependency when no import needs it; Linux still needs the file. The audit also lists imports exported only by a library other than the one they name; those resolve on Linux and can fail on Windows.
 
 | Option | Effect |
 |--------|--------|
