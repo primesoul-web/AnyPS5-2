@@ -81,12 +81,12 @@ def registered(build):
         if directory in visited or not file.is_file():
             continue
         visited.add(directory)
-        tests, disabled = {}, {}
+        tests, disabled = [], {}
         for command, arguments in commands(file.read_text(encoding="utf-8", errors="replace")):
             if command == "subdirs":
                 pending.extend(directory / argument for argument in arguments)
             elif command == "add_test" and arguments:
-                tests[arguments[0]] = arguments[1:]
+                tests.append((arguments[0], arguments[1:]))
             elif command == "set_tests_properties" and "PROPERTIES" in arguments:
                 properties = arguments.index("PROPERTIES")
                 values = arguments[properties + 1:]
@@ -94,7 +94,7 @@ def registered(build):
                     if key == "DISABLED":
                         for name in arguments[:properties]:
                             disabled[name] = value.upper() in ("1", "ON", "YES", "TRUE", "Y")
-        for test, arguments in tests.items():
+        for test, arguments in tests:
             if disabled.get(test, False):
                 continue
             for index, argument in enumerate(arguments):
