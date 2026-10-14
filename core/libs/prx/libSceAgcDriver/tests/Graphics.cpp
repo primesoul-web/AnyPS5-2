@@ -1095,6 +1095,11 @@ void DisabledColorTests() {
     queue.context[0x00b] = std::bit_cast<std::uint32_t>(1.0f);
     const auto depthOnly = AgcDriver::Graphics::DecodeState(queue);
     Require(!depthOnly.hasColorTarget && depthOnly.depth && depthOnly.depthTest && depthOnly.depthWrite && depthOnly.renderExtent.height == 64, "COLOR_INVALID discarded a depth-only draw");
+    Require(depthOnly.depth->slice == 0, "a depth view of slice 0 decoded another slice");
+    queue.context[0x002] = 3;
+    const auto thirdSlice = AgcDriver::Graphics::DecodeState(queue);
+    Require(thirdSlice.depth && thirdSlice.depth->slice == 3 && thirdSlice.depth->address == depthOnly.depth->address + 3u * AgcDriver::Graphics::DepthSliceBytes(depthOnly.depth->extent, 4u), "a depth view of slice 3 lost its slice or its Z offset");
+    queue.context[0x002] = 0;
     for (const auto colorControl : {0x0u, 0xcc0000u}) {
         queue = makeState();
         queue.context[0x202] = colorControl;
@@ -1307,6 +1312,13 @@ void DepthStencilTests() {
     AgcDriver::Graphics::RegisterReadLog() = nullptr;
     for (const auto read : log) Require(AgcDriver::Graphics::DrawKeyCovers(read), "DrawKeyRegisters lacks an HTILE register the decoder reads: " + std::to_string(read.offset));
     Require(state.depth->htileAddress == (0x30000ull | (1ull << 40u)), "the HTILE address was not decoded from DB_HTILE_DATA_BASE and its high byte");
+    {
+        const auto view = queue.context[0x002];
+        queue.context[0x002] = 2u | (2u << 13u);
+        const auto slice = AgcDriver::Graphics::DecodeState(queue);
+        Require(slice.depth->htileAddress == (0x30000ull | (1ull << 40u)) + 2u * AgcDriver::Graphics::HtileMetadataBytes(slice.depth->extent), "slice 2 of a depth array must use the third slice of its HTILE");
+        queue.context[0x002] = view;
+    }
     queue.context[0x010] &= ~0x20000000u;
     state = AgcDriver::Graphics::DecodeState(queue);
     Require(state.depth->htileAddress == 0, "a surface without TILE_SURFACE_ENABLE decoded an HTILE address");
