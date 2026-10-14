@@ -68,6 +68,10 @@ foreach(runtimeLinkFlag IN ITEMS -static-libgcc -static-libstdc++ -static)
     string(REPLACE "${runtimeLinkFlag}" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
 endforeach()
 
+if(ANYPS5_NATIVE_GRAPHICS)
+    return()
+endif()
+
 add_test_executable(agc_command_tests EXCLUDE_FROM_ALL tests/Commands.cpp)
 target_include_directories(agc_command_tests PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(agc_command_tests PRIVATE libSceAgc libSceAgcDriver libc)
