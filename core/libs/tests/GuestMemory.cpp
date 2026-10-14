@@ -99,7 +99,6 @@ static const char* NameAt(const void* address) {
     return info.name;
 }
 
-
 static void CheckReleaseFlexibleMemory() {
     constexpr std::size_t length = 0x10000;
     std::size_t before = 0;
