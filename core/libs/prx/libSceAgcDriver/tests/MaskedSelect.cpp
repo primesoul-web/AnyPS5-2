@@ -1,4 +1,5 @@
 #include "IntermediateRepresentation/IrProgram.hpp"
+#include "IntermediateRepresentation/IrBuilder.hpp"
 #include "Optimization/MaskedSelectEliminator.hpp"
 #include "StencilReplay.hpp"
 #include "RdnaDecoder/RdnaInstruction.hpp"
@@ -118,6 +119,25 @@ bool removed(const IrValue& value) {
 bool expect(const char* name, bool condition) {
     if (!condition) std::fprintf(stderr, "%s\n", name);
     return condition;
+}
+
+bool messageSafety(IrShaderStage stage, bool malformed = false, bool allocate = false) {
+    IrProgram program;
+    program.Resources().stage = stage;
+    auto& block = program.CreateBlock();
+    program.SetEntryBlock(block);
+    program.BlockOrder().push_back(&block);
+    IrBuilder builder(program);
+    builder.SetInsertionPoint(block);
+    if (allocate) static_cast<void>(builder.Emit(IrOpcode::MeshAllocate, IrType::Void, {&builder.Constant(0u)}));
+    else if (malformed) {
+        auto& message = program.CreateValue(IrOpcode::Sendmsg, IrType::Void);
+        message.AddArgument(&builder.Constant(0u));
+        block.AppendInstruction(&message);
+    }
+    else static_cast<void>(builder.Emit(IrOpcode::Sendmsg, IrType::Void, {}));
+    static_cast<void>(builder.Emit(IrOpcode::Return, IrType::Void, {}));
+    return StencilReplaySafe(program);
 }
 
 bool run(const char* name, const std::function<bool()>& test) {
@@ -768,6 +788,12 @@ int main() {
         b.eliminate();
         return removed(written);
     };
+
+    passed &= run("a vertex message emitted as void is replay-safe", [&] { return messageSafety(IrShaderStage::Vertex); });
+    passed &= run("pixel message classification remains unchanged", [&] { return !messageSafety(IrShaderStage::Pixel); });
+    passed &= run("compute message classification remains unchanged", [&] { return !messageSafety(IrShaderStage::Compute); });
+    passed &= run("a message with operands is refused", [&] { return !messageSafety(IrShaderStage::Vertex, true); });
+    passed &= run("mesh allocation remains refused", [&] { return !messageSafety(IrShaderStage::Vertex, false, true); });
 
     passed &= run("guard implication preserves a mask within its whole-quad expansion", [&] {
         Builder b;

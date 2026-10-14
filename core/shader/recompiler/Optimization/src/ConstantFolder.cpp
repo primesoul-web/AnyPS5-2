@@ -846,20 +846,6 @@ void ConstantFolder::Fold(IrProgram& program) const {
     Fold(program, program.BlockOrder());
 }
 
-bool ConstantFolder::FoldVertexLaneBounds(IrProgram& program, std::uint32_t hostSubgroupSize, std::uint32_t spirvVersion) const {
-    if (program.Resources().stage != IrShaderStage::Vertex || hostSubgroupSize != 32u || spirvVersion < 0x00010000u || spirvVersion >= 0x00010600u) return false;
-    bool changed = false;
-    IrBuilder builder(program);
-    for (IrBlock* block : program.BlockOrder()) {
-        for (IrValue* value : block->Instructions()) {
-            if (value->Opcode() != IrOpcode::ULessThan32 || value->ArgumentCount() != 2u || !isLaneIndex(resolveArg(*value, 0)) || !isImmediateU32(resolveArg(*value, 1), 32u)) continue;
-            replaceWith(*value, builder.ConstantBool(true));
-            changed = true;
-        }
-    }
-    return changed;
-}
-
 bool ConstantFolder::ComposePackedAncillary(IrProgram& program) const {
     std::vector<IrValue*> words;
     for (IrBlock* block : program.BlockOrder()) {
