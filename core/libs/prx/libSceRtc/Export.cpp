@@ -317,12 +317,12 @@ int APS5_VABI sceRtcCheckValid(const RtcDateTime* time) {
 }
 
 int APS5_VABI sceRtcIsLeapYear(int year) {
-    if (year < 1) return SCE_RTC_ERROR_INVALID_YEAR;
+    if (year < 1 || year > 9999) return SCE_RTC_ERROR_INVALID_YEAR;
     return isLeapYear(year) ? 1 : 0;
 }
 
 int APS5_VABI sceRtcGetDaysInMonth(int year, int month) {
-    if (year < 1) return SCE_RTC_ERROR_INVALID_YEAR;
+    if (year < 1 || year > 9999) return SCE_RTC_ERROR_INVALID_YEAR;
     if (month < 1 || month > 12) return SCE_RTC_ERROR_INVALID_MONTH;
     return daysInMonth(year, month);
 }
@@ -364,6 +364,7 @@ int APS5_VABI sceRtcGetCurrentNetworkTick(RtcTick* tick) {
 
 int APS5_VABI sceRtcGetCurrentClock(RtcDateTime* time, int time_zone_minutes) {
     if (!time) return SCE_RTC_ERROR_INVALID_POINTER;
+    if (time_zone_minutes < -1439 || time_zone_minutes > 1439) return SCE_RTC_ERROR_INVALID_VALUE;
     RtcTick tick{currentTick()};
     if (const int result = addTicks(&tick, &tick, time_zone_minutes, TICKS_PER_MINUTE); result != 0) return result;
     *time = fromTick(tick.tick);
@@ -372,8 +373,10 @@ int APS5_VABI sceRtcGetCurrentClock(RtcDateTime* time, int time_zone_minutes) {
 
 int APS5_VABI sceRtcGetCurrentClockLocalTime(RtcDateTime* time) {
     if (!time) return SCE_RTC_ERROR_INVALID_POINTER;
-    const std::uint64_t utc = currentTick();
-    *time = fromTick(utc + static_cast<std::uint64_t>(localOffsetSeconds(utc) * TICKS_PER_SECOND));
+    RtcTick local{};
+    const RtcTick utc{currentTick()};
+    if (const int result = addTicks(&local, &utc, localOffsetSeconds(utc.tick), TICKS_PER_SECOND); result != 0) return result;
+    *time = fromTick(local.tick);
     return 0;
 }
 
