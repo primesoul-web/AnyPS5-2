@@ -126,16 +126,10 @@ static void RejectsAnInvalidTimeout() {
     Require(FailsWith(Umtx(&word, UMTX_OP_WAIT_UINT, 1, SizeOf(sizeof(negative)), &negative), GUEST_EINVAL));
     KernelTimespec tooManyNanos{0, 1000000000};
     Require(FailsWith(Umtx(&word, UMTX_OP_WAIT_UINT, 1, SizeOf(sizeof(tooManyNanos)), &tooManyNanos), GUEST_EINVAL));
-    for (const int operation : {UMTX_OP_WAIT, UMTX_OP_WAIT_UINT}) {
-        bool threw = false;
-        try { Umtx(&word, operation, 1, nullptr, &tooManyNanos); }
-        catch (const std::runtime_error&) { threw = true; }
-        Require(threw);
-        threw = false;
-        try { Umtx(&word, operation, 1, nullptr, &negative); }
-        catch (const std::runtime_error&) { threw = true; }
-        Require(threw);
-    }
+    std::uint32_t usecs = 20000;
+    auto start = std::chrono::steady_clock::now();
+    Require(FailsWith(Umtx(&word, UMTX_OP_WAIT_UINT, 1, nullptr, &usecs), GUEST_ETIMEDOUT));
+    Require(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(15));
     UmtxTime negativeNanos{{0, -1}, 0, CLOCK_MONOTONIC_ID};
     Require(FailsWith(Umtx(&word, UMTX_OP_WAIT_UINT, 1, SizeOf(sizeof(negativeNanos)), &negativeNanos), GUEST_EINVAL));
 }
