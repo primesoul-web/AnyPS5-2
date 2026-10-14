@@ -96,6 +96,19 @@ extern "C" void LibcRunShutdown_nid_postfix() {
     if (error) std::rethrow_exception(error);
 }
 
+namespace {
+
+void BeginExit() {
+    exitRequested.store(true);
+    if (exitStarted.exchange(true)) {
+        if (!runningExit) LibcAwaitExit_nid_postfix();
+    } else {
+        runningExit = true;
+    }
+}
+
+}
+
 extern "C" {
 
 [[noreturn]] void APS5_VABI _Exit_nid_postfix(int code) {
@@ -115,14 +128,9 @@ extern "C" {
 }
 
 [[noreturn]] void LibcExit_nid_no_patch(int code) {
-    exitRequested.store(true);
-    if (exitStarted.exchange(true)) {
-        if (!runningExit) LibcAwaitExit_nid_postfix();
-    } else {
-        runningExit = true;
-        LibcRunShutdown_nid_postfix();
-    }
+    BeginExit();
     CxaFinalize_nid_no_patch(nullptr);
+    LibcRunShutdown_nid_postfix();
     std::exit(code);
 }
 

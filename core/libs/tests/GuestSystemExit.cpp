@@ -74,6 +74,11 @@ void MainShutdown() { AppendMarker("shutdown"); }
 void SecondaryShutdown() { AppendMarker("secondary shutdown"); }
 void APS5_VABI RemainingHandler(void*) { AppendMarker("remaining handler"); }
 void APS5_VABI ExitingHandler(void*) { exit_nid_postfix(7); }
+void GuestExitShutdown() { AppendMarker("shutdown"); }
+void APS5_VABI CheckShutdownStillRunning(void*) {
+    if (LibcShutdownToken_nid_postfix().stop_requested()) std::_Exit(8);
+    AppendMarker("guest finalizer");
+}
 int RunChild(const std::filesystem::path& self, const char* mode) {
 #ifdef _WIN32
     std::wstring commandLine = L"\"" + self.wstring() + L"\" " + std::wstring(mode, mode + std::strlen(mode));
@@ -114,6 +119,23 @@ int DriveNestedExit() {
     Require(code == 7);
     Require(text == "remaining handler\n");
     std::puts("Guest nested exit completed");
+    return 0;
+}
+int DriveExitOrder() {
+    const auto self = OwnExecutable();
+    const auto marker = std::filesystem::temp_directory_path() / ("anyps5-exit-order-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
+    SetVariable(RelaunchMarker, marker.string().c_str());
+    const int code = RunChild(self, "--exit-order");
+    std::string text;
+    {
+        std::ifstream file(marker);
+        text.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+    std::error_code ignored;
+    std::filesystem::remove(marker, ignored);
+    Require(code == 0);
+    Require(text == "guest finalizer\nshutdown\n");
+    std::puts("Guest finalizers ran before shutdown");
     return 0;
 }
 int DriveRelaunch() {
@@ -166,6 +188,15 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--nested-exit") == 0) {
         Require(__cxa_atexit_nid_postfix(RemainingHandler, nullptr, nullptr) == 0);
         Require(__cxa_atexit_nid_postfix(ExitingHandler, nullptr, nullptr) == 0);
+        exit_nid_postfix(0);
+        return 2;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--exit-order-driver") == 0) {
+        return DriveExitOrder();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--exit-order") == 0) {
+        LibcRegisterShutdown_nid_postfix(GuestExitShutdown);
+        Require(__cxa_atexit_nid_postfix(CheckShutdownStillRunning, nullptr, nullptr) == 0);
         exit_nid_postfix(0);
         return 2;
     }
