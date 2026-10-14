@@ -6,8 +6,6 @@
 
 extern "C" {
 int APS5_VABI sceNetShowIfconfig();
-int APS5_VABI scePadUnknown_n3kSX62fgNo();
-int APS5_VABI _ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_();
 }
 
 namespace {
@@ -19,8 +17,6 @@ struct Export {
 
 const Export exports[] = {
     {"sceNetShowIfconfig", sceNetShowIfconfig},
-    {"scePadUnknown_n3kSX62fgNo", scePadUnknown_n3kSX62fgNo},
-    {"_ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_", _ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_},
 };
 
 bool ReportsNotImplemented(const Export& entry) {
