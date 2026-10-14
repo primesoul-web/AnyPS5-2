@@ -14,7 +14,7 @@ unless --summary names another file."""
 
 
 def is_wait(name):
-    return "wait" in name.rsplit(".", 1)[-1].lower()
+    return name.startswith("GpuMutex.wait.") or "wait" in name.rsplit(".", 1)[-1].lower()
 
 
 class Trace:
