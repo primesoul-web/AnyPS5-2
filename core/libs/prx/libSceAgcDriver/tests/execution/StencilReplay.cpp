@@ -59,6 +59,11 @@ alignas(256) constexpr std::array<std::uint32_t, 6> VertexCode{
     0xe0382000, 0x80000005, 0xbf8c3f70, 0xf80008cf, 0x03020100, 0xbf810000,
 };
 
+alignas(256) constexpr std::array<std::uint32_t, 9> LowerHalfVertexCode{
+    0xbefe00c1u, 0xbeff0080u, 0xe0382000u, 0x80000005u, 0xbf8c3f70u,
+    0xf80008cfu, 0x03020100u, 0xbf900003u, 0xbf810000u,
+};
+
 alignas(256) constexpr std::array<std::uint32_t, 4> PlainPixelCode{
     0x7e0e02f2, 0xf800180f, 0x07070707, 0xbf810000,
 };
@@ -88,12 +93,14 @@ ShaderRecompiler::ShaderPixelStageInfo PixelInfo(std::uint32_t shaderControl) {
     return AgcDriver::Graphics::DecodePixelStageInfo(context, {0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u});
 }
 
-void Draw(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelCode, std::uint32_t shaderControl, const VkStencilOpState& stencil, std::uint32_t vertices = 3u, std::uint32_t instances = 1u, bool depthFail = false, const std::function<void(AgcDriver::Graphics::State&)>& alter = {}, const std::function<void(AgcDriver::Pm4::DrawParameters&)>& alterDraw = {}, std::span<const std::array<float, 4>> vertexData = Vertices, std::span<const std::uint32_t> vertexCode = VertexCode, std::span<const std::uint32_t> pixelData = {}, std::span<const ShaderRecompiler::MemoryRegion> pixelSrt = {}) {
+void Draw(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelCode, std::uint32_t shaderControl, const VkStencilOpState& stencil, std::uint32_t vertices = 3u, std::uint32_t instances = 1u, bool depthFail = false, const std::function<void(AgcDriver::Graphics::State&)>& alter = {}, const std::function<void(AgcDriver::Pm4::DrawParameters&)>& alterDraw = {}, std::span<const std::array<float, 4>> vertexData = Vertices, std::span<const std::uint32_t> vertexCode = VertexCode, std::span<const std::uint32_t> pixelData = {}, std::span<const ShaderRecompiler::MemoryRegion> pixelSrt = {}, const std::function<void(ShaderRecompiler::RecompileResult&)>& alterVertex = {}, bool singleLaneVertex = false) {
     Pixels.fill(Kept);
     auto target = device.Target();
     std::vector<std::uint32_t> capabilities(target.supportedCapabilities.begin(), target.supportedCapabilities.end());
     std::erase(capabilities, static_cast<std::uint32_t>(spv::CapabilityStencilExportEXT));
     target.supportedCapabilities = capabilities;
+    auto vertexTarget = target;
+    if (singleLaneVertex) vertexTarget.vertexSubgroups = false;
 
     std::vector<std::uint32_t> vertexUserData(4, 0u);
     const auto vertexBuffer = BufferDescriptor(vertexData.data(), 16u, static_cast<std::uint32_t>(vertexData.size()));
@@ -102,11 +109,12 @@ void Draw(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelC
     ShaderRecompiler::RecompileRequest vertex{
         {ShaderStage::Vertex, reinterpret_cast<std::uintptr_t>(vertexCode.data()), vertexCode, 0, {}},
         {WaveSize, 0, vertexUserData, std::nullopt, std::nullopt, ShaderRecompiler::ShaderVertexStageInfo{}, vertexMemory},
-        target,
+        vertexTarget,
         {0, 0, 0, 64}
     };
     vertex.useCache = false;
-    const auto vertexResult = ShaderRecompiler::Recompile(vertex);
+    auto vertexResult = ShaderRecompiler::Recompile(vertex);
+    if (alterVertex) alterVertex(vertexResult);
     const auto vertexPush = static_cast<std::uint32_t>(vertexResult.pushConstants.size());
 
     auto pixelUserData = pixelData.empty() ? std::vector<std::uint32_t>(8, 0u) : std::vector<std::uint32_t>(pixelData.begin(), pixelData.end());
@@ -204,6 +212,37 @@ int main() {
         const auto all = [](std::uint32_t, std::uint32_t) { return true; };
         const auto even = [](std::uint32_t x, std::uint32_t) { return x % 2u == 0u; };
         const auto odd = [](std::uint32_t x, std::uint32_t) { return x % 2u != 0u; };
+        if (device->Target().subgroupSize == 32u) {
+            Draw(*device, alternating, exported, replace(), 6u, 2u, false, {}, {}, Vertices, LowerHalfVertexCode);
+            Check(all, "constant lower-half vertex masks preserve overlapping primitives and instances");
+            Draw(*device, PlainPixelCode, plain, equal(255u));
+            Check(even, "lower-half vertex masks preserve the even stencil class");
+            Draw(*device, PlainPixelCode, plain, equal(0u));
+            Check(odd, "lower-half vertex masks preserve the odd stencil class");
+        } else {
+            bool refused = false;
+            try { Draw(*device, alternating, exported, replace(), 6u, 2u, false, {}, {}, Vertices, LowerHalfVertexCode); }
+            catch (const std::exception& error) { refused = std::string_view(error.what()).find("stencil replay refuses stages") != std::string_view::npos; if (!refused) throw; }
+            Require(refused, "a lower-half mask was accepted without a proven physical subgroup bound");
+        }
+        bool rejectedContract = false;
+        try {
+            Draw(*device, alternating, exported, replace(), 3u, 1u, false, {}, {}, Vertices, VertexCode, {}, {}, [&](ShaderRecompiler::RecompileResult& result) { result.hostSubgroupSize = device->Target().subgroupSize == 64u ? 32u : 64u; });
+        } catch (const std::exception& error) {
+            rejectedContract = std::string_view(error.what()).find("subgroup contract differs") != std::string_view::npos;
+            if (!rejectedContract) throw;
+        }
+        Require(rejectedContract, "a stale vertex subgroup-size contract was accepted");
+        rejectedContract = false;
+        try {
+            Draw(*device, alternating, exported, replace(), 3u, 1u, false, {}, {}, Vertices, VertexCode, {}, {}, [](ShaderRecompiler::RecompileResult& result) { auto words = result.spirv.Words(); words[1] = 0x00010600u; result.spirv = std::move(words); });
+        } catch (const std::exception& error) {
+            rejectedContract = std::string_view(error.what()).find("subgroup contract differs") != std::string_view::npos;
+            if (!rejectedContract) throw;
+        }
+        Require(rejectedContract, "a varying-size module contract was accepted");
+        Draw(*device, alternating, exported, replace(), 6u, 2u, false, {}, {}, Vertices, VertexCode, {}, {}, {}, true);
+        Check(all, "a compiled single-lane vertex target preserves stencil replay");
         Draw(*device, alternating, exported, replace());
         Check(all, "finite stencil export");
         Draw(*device, PlainPixelCode, plain, equal(255u));

@@ -730,6 +730,9 @@ bool StencilReplaySafe(const IrProgram& program) {
                 case IrOpcode::Waitcnt:
                 case IrOpcode::InstPrefetch:
                     break;
+                case IrOpcode::Sendmsg:
+                    if (program.Resources().stage != IrShaderStage::Vertex || instruction->ArgumentCount() != 0u) return false;
+                    break;
                 default:
                     return false;
             }

@@ -326,6 +326,12 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
             specializations.emplace_back(shader);
             stages[i].pSpecializationInfo = specializations.back().Info();
         }
+        if (std::ranges::any_of(shaders, [](const CompiledShader& shader) { return shader.program != nullptr && !shader.program->stencilReferences.empty(); })) {
+            for (std::size_t i = 0; i < shaders.size(); ++i) {
+                if (shaders[i].stage != ShaderRecompiler::ShaderStage::Vertex) continue;
+                Require(stages[i].flags == 0u && stages[i].pNext == nullptr, "stencil replay vertex stage allows varying subgroup size");
+            }
+        }
         // A descriptor set layout with the same bindings as this one is compatible with the pipeline
         // layout, so later draws bind their own ShaderResources' set under it.
         const std::array<VkDescriptorSetLayout, 2> setLayouts{resources.main, resources.fragment};
