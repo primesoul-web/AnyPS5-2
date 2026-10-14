@@ -218,6 +218,10 @@ int APS5_VABI mlockall_nid_postfix(int flags) {
     throw std::runtime_error("mlockall: MCL_CURRENT is not implemented: the process also holds host stacks, heaps, modules and driver mappings");
 }
 
+int APS5_VABI munlockall_nid_postfix() {
+    return 0;
+}
+
 int APS5_VABI msync_nid_postfix(void* address, std::size_t length, int flags) {
     const auto failed = [](int error) {
         SetError(error);

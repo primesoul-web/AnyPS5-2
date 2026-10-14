@@ -22,6 +22,7 @@ int APS5_VABI sceKernelMunmap(void*, std::size_t);
 int APS5_VABI mlock_nid_postfix(const void*, std::size_t);
 int APS5_VABI munlock_nid_postfix(const void*, std::size_t);
 int APS5_VABI mlockall_nid_postfix(int);
+int APS5_VABI munlockall_nid_postfix();
 int* APS5_VABI __error_nid_postfix();
 }
 
@@ -139,5 +140,9 @@ int main() {
     RequireLockAllUnsupported(1);
     RequireLockAllUnsupported(2);
     RequireLockAllUnsupported(1 | 2);
+
+    *__error_nid_postfix() = untouched;
+    Require(munlockall_nid_postfix() == 0);
+    Require(*__error_nid_postfix() == untouched);
     return 0;
 }
