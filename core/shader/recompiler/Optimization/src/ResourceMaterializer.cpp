@@ -103,8 +103,6 @@ RdnaImageDimension descriptorDimension(const DescriptorValue& descriptor, RdnaIm
     }
 }
 
-// A T# of type 0 or 1 names no image; on gfx1010 image_sample, image_load and image_get_resinfo through one return
-// zeros without a fault, as a null image does.
 bool nonImageDescriptor(const DescriptorValue& descriptor) {
     return static_cast<std::uint32_t>(rawImageType(descriptor)) <= 1u;
 }
