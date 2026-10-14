@@ -18,6 +18,30 @@ The output remains x86-64 Linux ELF or Windows PE. Converted games need system l
 
 Use a separate build directory for the full build.
 
+## Development snapshots and web converter
+
+Every successful automatic `main` Build run produces a development snapshot named `vdev-<full commit SHA>`. The existing Linux and Windows jobs package their tested relinker and patched libraries; a separate job builds and tests the WebAssembly converter with Emscripten 6.0.3. Pull request builds and manually combined pull request builds do not publish snapshots.
+
+Snapshot-producing native builds use fresh GitHub-hosted runners and do not restore compiler or toolchain caches that manual pull request code can write. Manual Linux pull request builds still use the project's self-hosted runner and persistent caches; their artifacts are not published.
+
+The [Snapshots workflow](../../.github/workflows/snapshots.yml) downloads artifacts from that exact Build run and publishes the native executables, library archives, complete web site and user documentation as a GitHub prerelease. Development snapshots are not marked as the latest stable release. Stable releases still use other `v*` tags through the [Release workflow](../../.github/workflows/release.yml).
+
+The converter, frontend and both library sets come from the same commit. `release.json` records the commit, version, library sizes and SHA-256 hashes. The browser uses that manifest rather than the latest stable release API; frontend and converter URLs include the commit. A cached page whose commit differs from the manifest, or whose assets were removed by a deployment, fails and asks for a reload instead of mixing versions.
+
+The [Pages workflow](../../.github/workflows/pages.yml) deploys the complete snapshot site only if its commit is still current `main`. Failed builds, incomplete snapshots and superseded runs leave the published site unchanged. A manual Pages run also requires a successful snapshot of current `main` with an unexpired site artifact. Published snapshot assets are immutable; a publisher rerun restores the original published web archive. An unpublished draft can be replaced before publication.
+
+For local assembly, build `relinker_web` from the same checkout as both native library archives. Set `SHA` to that checkout's full commit SHA and `REPOSITORY` to its GitHub `owner/name`. Place `prx-linux-vdev-$SHA.zip` and `prx-windows-vdev-$SHA.zip` in `dist`, then run:
+
+```sh
+emcmake cmake -S . -B build-wasm -DANYPS5_BUILD_WASM=ON -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build-wasm --target relinker_web --parallel 2
+python3 tools/test_web.py --build build-wasm
+python3 tools/build_web.py --build build-wasm --library-archives dist --version "vdev-$SHA" --commit "$SHA" --repository "$REPOSITORY"
+python3 tools/package_release.py --web build-wasm/web --output dist --version "vdev-$SHA"
+```
+
+This produces `dist/web-vdev-$SHA.zip`, including the complete site and its libraries. Native archive provenance is established by the CI run and pinned checkout; local assembly requires the caller to supply matching archives.
+
 ## Full build
 
 ```sh

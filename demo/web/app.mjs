@@ -9,6 +9,7 @@ let outputDirectory;
 let downloadUrl;
 let logs = [];
 let release;
+const commit = /\/native\/([a-f0-9]{40})\/app\.mjs$/u.exec(new URL(import.meta.url).pathname)?.[1];
 const canSaveZip = typeof window.showSaveFilePicker === "function" && window.isSecureContext;
 const canStream = typeof window.showDirectoryPicker === "function" && window.isSecureContext;
 const supported = window.isSecureContext && window.Worker && window.WebAssembly && window.ReadableStream && window.WritableStream && window.crypto?.subtle;
@@ -211,7 +212,7 @@ $("convert").onclick = async () => {
     $("status").hidden = false;
     $("cancel").hidden = false;
     $("error").hidden = true;
-    worker.postMessage({ type: "convert", target: document.querySelector('input[name="target"]:checked').value, toIntel: $("intel").checked, mode: $("save").value });
+    worker.postMessage({ type: "convert", target: document.querySelector('input[name="target"]:checked').value, toIntel: $("intel").checked, mode: $("save").value, release });
   } catch (error) {
     if (error.name === "AbortError") { working = false; lock(false); update(); }
     else await fail(error.message);
@@ -225,6 +226,7 @@ update();
 lock(false);
 if (supported) fetch("./release.json", { cache: "no-cache" }).then(response => { if (!response.ok) throw new Error(`Cannot load release information (${response.status})`); return response.json(); }).then(value => {
   if (!value.tag || !["windows", "linux"].every(target => Number.isSafeInteger(value.platforms?.[target]?.expandedBytes))) throw new Error("Invalid release information");
+  if (!commit || value.commit !== commit) throw new Error("The site has been updated; reload the page.");
   release = value;
   update();
 }).catch(error => fail(error.message));
