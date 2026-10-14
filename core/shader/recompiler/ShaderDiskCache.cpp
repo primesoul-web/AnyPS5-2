@@ -138,7 +138,7 @@ constexpr std::size_t fieldCount() {
 
 static_assert(fieldCount<ShaderInfo>() == 23, "ShaderInfo changed: update the info encoder");
 static_assert(fieldCount<BufferResource>() == 12, "BufferResource changed: update the info encoder");
-static_assert(fieldCount<ImageResource>() == 37, "ImageResource changed: update the info encoder");
+static_assert(fieldCount<ImageResource>() == 38, "ImageResource changed: update the info encoder");
 static_assert(fieldCount<SamplerResource>() == 7, "SamplerResource changed: update the info encoder");
 static_assert(fieldCount<SampledResourcePair>() == 3, "SampledResourcePair changed: update the info encoder");
 static_assert(fieldCount<StageInput>() == 5, "StageInput changed: update the info encoder");
@@ -649,6 +649,7 @@ void encodeShaderInfo(Writer& writer, const ShaderInfo& info) {
         out.Value(image.depthBitsCompatible);
         out.Value(image.constantSwizzle);
         out.Value(image.constantSwizzleCompatible);
+        out.Value(image.cubeFaceCompatible);
         out.Value(image.flatVolumeCompatible);
         out.Value(image.flatLineCompatible);
         out.Value(image.foldTexelOffsetsOnly);
@@ -722,7 +723,7 @@ void decodeShaderInfo(Reader& reader, ShaderInfo& info) {
         in.Value(buffer.scalar);
         in.Value(buffer.typedAlignment);
     });
-    reader.List(info.images, 75, [](Reader& in, ImageResource& image) {
+    reader.List(info.images, 76, [](Reader& in, ImageResource& image) {
         in.Value(image.source);
         in.Value(image.firstUsePc);
         in.Value(image.resourceClass);
@@ -749,6 +750,7 @@ void decodeShaderInfo(Reader& reader, ShaderInfo& info) {
         in.Value(image.depthBitsCompatible);
         in.Value(image.constantSwizzle);
         in.Value(image.constantSwizzleCompatible);
+        in.Value(image.cubeFaceCompatible);
         in.Value(image.flatVolumeCompatible);
         in.Value(image.flatLineCompatible);
         in.Value(image.foldTexelOffsetsOnly);
