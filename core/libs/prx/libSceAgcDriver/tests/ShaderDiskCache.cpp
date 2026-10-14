@@ -378,6 +378,9 @@ void verifyEntryRoundTrip() {
     auto previousVersion = file;
     previousVersion[4] = static_cast<std::byte>(ShaderDiskCache::FormatVersion - 1u);
     require(ShaderDiskCache::DecodeEntry(previousVersion, key, decoded) == ShaderDiskCache::LoadStatus::Rejected, "an entry with the previous format version loads");
+    auto upstreamVersion = file;
+    upstreamVersion[4] = std::byte{30};
+    require(ShaderDiskCache::DecodeEntry(upstreamVersion, key, decoded) == ShaderDiskCache::LoadStatus::Rejected, "a stencil artifact with the upstream resource plan format loads");
     auto incompatible = variant;
     incompatible.artifact.runtimeAbiVersion = RuntimeAbi::Version + 1u;
     const auto incompatibleFile = ShaderDiskCache::EncodeEntry(key, incompatible);
@@ -1912,6 +1915,19 @@ void verifyDefaultDirectory(const char* self) {
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--resource-plan-codec") {
+            verifyResultRoundTrip();
+            verifyEntryRoundTrip();
+            verifyIndirectImagePlanModes();
+            std::cout << "resource plan codec tests passed\n";
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--artifact-codec") {
+            verifyResultRoundTrip();
+            verifyEntryRoundTrip();
+            std::cout << "artifact codec tests passed\n";
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--load") return runLoadingProcess();
         if (argc == 2 && std::string_view(argv[1]) == "--no-failure-memo") return runWithoutFailureMemo();
         if (argc == 2 && std::string_view(argv[1]).starts_with("--load-plan")) return runPlanLoadingProcess(argv[1]);
