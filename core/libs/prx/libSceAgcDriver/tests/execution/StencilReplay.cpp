@@ -88,7 +88,7 @@ ShaderRecompiler::ShaderPixelStageInfo PixelInfo(std::uint32_t shaderControl) {
     return AgcDriver::Graphics::DecodePixelStageInfo(context, {0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u, 0xe4u});
 }
 
-void Draw(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelCode, std::uint32_t shaderControl, const VkStencilOpState& stencil, std::uint32_t vertices = 3u, std::uint32_t instances = 1u, bool depthFail = false, const std::function<void(AgcDriver::Graphics::State&)>& alter = {}, const std::function<void(AgcDriver::Pm4::DrawParameters&)>& alterDraw = {}, std::span<const std::array<float, 4>> vertexData = Vertices, std::span<const std::uint32_t> vertexCode = VertexCode, std::span<const std::uint32_t> pixelData = {}, std::span<const ShaderRecompiler::MemoryRegion> pixelSrt = {}) {
+void Draw(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelCode, std::uint32_t shaderControl, const VkStencilOpState& stencil, std::uint32_t vertices = 3u, std::uint32_t instances = 1u, bool depthFail = false, const std::function<void(AgcDriver::Graphics::State&)>& alter = {}, const std::function<void(AgcDriver::Pm4::DrawParameters&)>& alterDraw = {}, std::span<const std::array<float, 4>> vertexData = Vertices, std::span<const std::uint32_t> vertexCode = VertexCode, std::span<const std::uint32_t> pixelData = {}, std::span<const ShaderRecompiler::MemoryRegion> pixelSrt = {}, const std::function<void(ShaderRecompiler::RecompileResult&)>& alterVertex = {}) {
     Pixels.fill(Kept);
     auto target = device.Target();
     std::vector<std::uint32_t> capabilities(target.supportedCapabilities.begin(), target.supportedCapabilities.end());
@@ -106,7 +106,8 @@ void Draw(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelC
         {0, 0, 0, 64}
     };
     vertex.useCache = false;
-    const auto vertexResult = ShaderRecompiler::Recompile(vertex);
+    auto vertexResult = ShaderRecompiler::Recompile(vertex);
+    if (alterVertex) alterVertex(vertexResult);
     const auto vertexPush = static_cast<std::uint32_t>(vertexResult.pushConstants.size());
 
     auto pixelUserData = pixelData.empty() ? std::vector<std::uint32_t>(8, 0u) : std::vector<std::uint32_t>(pixelData.begin(), pixelData.end());
@@ -204,6 +205,22 @@ int main() {
         const auto all = [](std::uint32_t, std::uint32_t) { return true; };
         const auto even = [](std::uint32_t x, std::uint32_t) { return x % 2u == 0u; };
         const auto odd = [](std::uint32_t x, std::uint32_t) { return x % 2u != 0u; };
+        bool rejectedContract = false;
+        try {
+            Draw(*device, alternating, exported, replace(), 3u, 1u, false, {}, {}, Vertices, VertexCode, {}, {}, [&](ShaderRecompiler::RecompileResult& result) { result.hostSubgroupSize = device->Target().subgroupSize == 64u ? 32u : 64u; });
+        } catch (const std::exception& error) {
+            rejectedContract = std::string_view(error.what()).find("subgroup contract differs") != std::string_view::npos;
+            if (!rejectedContract) throw;
+        }
+        Require(rejectedContract, "a stale vertex subgroup-size contract was accepted");
+        rejectedContract = false;
+        try {
+            Draw(*device, alternating, exported, replace(), 3u, 1u, false, {}, {}, Vertices, VertexCode, {}, {}, [](ShaderRecompiler::RecompileResult& result) { auto words = result.spirv.Copy(); words[1] = 0x00010600u; result.spirv = std::move(words); });
+        } catch (const std::exception& error) {
+            rejectedContract = std::string_view(error.what()).find("subgroup contract differs") != std::string_view::npos;
+            if (!rejectedContract) throw;
+        }
+        Require(rejectedContract, "a varying-size module contract was accepted");
         Draw(*device, alternating, exported, replace());
         Check(all, "finite stencil export");
         Draw(*device, PlainPixelCode, plain, equal(255u));
