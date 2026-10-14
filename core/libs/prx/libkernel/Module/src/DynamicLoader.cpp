@@ -19,6 +19,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
 #else
 #include <dlfcn.h>
 #include <link.h>
@@ -58,6 +61,9 @@ void* Symbol(Module& module, const char* name) {
 }
 #ifndef _WIN32
 std::uintptr_t MainProgramBase() {
+#ifdef __APPLE__
+    return reinterpret_cast<std::uintptr_t>(_dyld_get_image_header(0));
+#else
     static const std::uintptr_t base = [] {
         struct Scan {
             std::uintptr_t value = 0;
@@ -73,6 +79,7 @@ std::uintptr_t MainProgramBase() {
         return scan.value;
     }();
     return base;
+#endif
 }
 
 bool FromGuestModule(void* address) {

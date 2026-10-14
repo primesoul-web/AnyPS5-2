@@ -98,6 +98,10 @@ downloads/
 *.png
 
 *.json
+!core/aot/examples/gpu_cube/contract-recipe.json
+!core/aot/catalogs/apple-runtime.json
+!core/aot/catalogs/glibc-x86_64.json
+!core/aot/tests/guest_lab_cases.json
 !demo/web/i18n/*.json
 
 !/assets/*.jpg
