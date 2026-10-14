@@ -5171,6 +5171,153 @@ void stencilRefExportTests() {
     static_cast<void>(AgcDriver::Graphics::DecodeState(queue));
 }
 
+bool stencilComparison(VkCompareOp op, std::uint32_t reference, std::uint32_t stencil) {
+    switch (op) {
+        case VK_COMPARE_OP_NEVER: return false;
+        case VK_COMPARE_OP_LESS: return reference < stencil;
+        case VK_COMPARE_OP_EQUAL: return reference == stencil;
+        case VK_COMPARE_OP_LESS_OR_EQUAL: return reference <= stencil;
+        case VK_COMPARE_OP_GREATER: return reference > stencil;
+        case VK_COMPARE_OP_NOT_EQUAL: return reference != stencil;
+        case VK_COMPARE_OP_GREATER_OR_EQUAL: return reference >= stencil;
+        case VK_COMPARE_OP_ALWAYS: return true;
+        default: throw std::runtime_error("invalid stencil comparison in the reference oracle");
+    }
+}
+
+std::pair<std::uint32_t, bool> stencilReferenceOutcome(const AgcDriver::Graphics::State& state, const VkStencilOpState& face, std::uint32_t reference, std::uint32_t stencil, bool depthPass, bool boundsPass) {
+    if (state.depthBoundsTest && !boundsPass) return {stencil, false};
+    const bool stencilPass = stencilComparison(face.compareOp, reference & face.compareMask & 0xffu, stencil & face.compareMask & 0xffu);
+    if (!state.depthTest || state.depthCompare == VK_COMPARE_OP_ALWAYS) depthPass = true;
+    if (state.depthTest && state.depthCompare == VK_COMPARE_OP_NEVER) depthPass = false;
+    const auto op = !stencilPass ? face.failOp : !depthPass ? face.depthFailOp : face.passOp;
+    auto updated = stencil;
+    switch (op) {
+        case VK_STENCIL_OP_KEEP: break;
+        case VK_STENCIL_OP_ZERO: updated = 0; break;
+        case VK_STENCIL_OP_REPLACE: updated = reference; break;
+        case VK_STENCIL_OP_INCREMENT_AND_CLAMP: updated = std::min(stencil + 1u, 255u); break;
+        case VK_STENCIL_OP_DECREMENT_AND_CLAMP: updated = stencil == 0 ? 0 : stencil - 1u; break;
+        case VK_STENCIL_OP_INVERT: updated = ~stencil; break;
+        case VK_STENCIL_OP_INCREMENT_AND_WRAP: updated = stencil + 1u; break;
+        case VK_STENCIL_OP_DECREMENT_AND_WRAP: updated = stencil - 1u; break;
+        default: throw std::runtime_error("invalid stencil operation in the reference oracle");
+    }
+    const auto writeMask = face.writeMask & 0xffu;
+    return {((stencil & ~writeMask) | (updated & writeMask)) & 0xffu, stencilPass && depthPass};
+}
+
+void stencilReferenceUnusedTests() {
+    using AgcDriver::Graphics::StencilReferenceUnused;
+    AgcDriver::Graphics::State state{};
+    state.depth.emplace();
+    state.depth->format = VK_FORMAT_D32_SFLOAT_S8_UINT;
+    state.stencilTest = true;
+    state.stencilFront = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS, 0xffu, 0xffu, 37u};
+    state.stencilBack = state.stencilFront;
+    std::size_t accepted = 0;
+    std::size_t countermodels = 0;
+    const auto verify = [&](const auto& candidate, bool unused, bool witness, std::string_view name) {
+        Require(StencilReferenceUnused(candidate) == unused, "wrong unused stencil reference decision for " + std::string(name));
+        bool changed = false;
+        for (const auto& face : {candidate.stencilFront, candidate.stencilBack}) {
+            for (std::uint32_t stencil = 0; stencil < 256u; ++stencil) {
+                for (const bool depthPass : {false, true}) {
+                    for (const bool boundsPass : {false, true}) {
+                        const auto fixed = stencilReferenceOutcome(candidate, face, face.reference, stencil, depthPass, boundsPass);
+                        for (std::uint32_t reference = 0; reference < 256u; ++reference) {
+                            changed |= stencilReferenceOutcome(candidate, face, reference, stencil, depthPass, boundsPass) != fixed;
+                        }
+                    }
+                }
+            }
+        }
+        Require(!unused || !changed, "dropping the stencil reference changes a sample outcome for " + std::string(name));
+        Require(!witness || changed, "the dependent stencil reference has no countermodel for " + std::string(name));
+        accepted += unused;
+        countermodels += witness;
+    };
+    verify(state, true, false, "ALWAYS with KEEP");
+    for (const auto op : {VK_STENCIL_OP_ZERO, VK_STENCIL_OP_INCREMENT_AND_CLAMP, VK_STENCIL_OP_DECREMENT_AND_CLAMP, VK_STENCIL_OP_INVERT, VK_STENCIL_OP_INCREMENT_AND_WRAP, VK_STENCIL_OP_DECREMENT_AND_WRAP}) {
+        auto independent = state;
+        independent.stencilFront.passOp = op;
+        independent.stencilBack = independent.stencilFront;
+        verify(independent, true, false, "reference-independent update");
+    }
+    for (std::uint32_t comparison = 0; comparison < 8u; ++comparison) {
+        auto masked = state;
+        masked.stencilFront.compareOp = static_cast<VkCompareOp>(comparison);
+        masked.stencilFront.compareMask = 0x100u;
+        masked.stencilBack = masked.stencilFront;
+        verify(masked, true, false, "effective zero compare mask");
+        if (comparison != VK_COMPARE_OP_ALWAYS && comparison != VK_COMPARE_OP_NEVER) {
+            auto dependent = masked;
+            dependent.stencilBack.compareMask = 0x80u;
+            dependent.stencilBack.writeMask = 0;
+            verify(dependent, false, true, "dependent back-face comparison with no writes");
+        }
+    }
+    auto replace = state;
+    replace.stencilFront.passOp = VK_STENCIL_OP_REPLACE;
+    verify(replace, false, true, "reachable front pass REPLACE");
+    replace.stencilFront.passOp = VK_STENCIL_OP_KEEP;
+    replace.stencilBack.failOp = VK_STENCIL_OP_REPLACE;
+    verify(replace, true, false, "unreachable back fail REPLACE");
+    replace.stencilBack.compareOp = VK_COMPARE_OP_NEVER;
+    verify(replace, false, true, "reachable back fail REPLACE");
+    replace.stencilBack.failOp = VK_STENCIL_OP_KEEP;
+    replace.stencilBack.passOp = VK_STENCIL_OP_REPLACE;
+    replace.stencilBack.depthFailOp = VK_STENCIL_OP_REPLACE;
+    verify(replace, true, false, "NEVER with unreachable depth operations");
+    replace = state;
+    replace.stencilBack.passOp = VK_STENCIL_OP_REPLACE;
+    replace.stencilBack.writeMask = 0x100u;
+    verify(replace, true, false, "effective zero write mask");
+    replace.stencilBack.writeMask = 0x80u;
+    verify(replace, false, true, "partially writable REPLACE");
+    replace = state;
+    replace.stencilBack.depthFailOp = VK_STENCIL_OP_REPLACE;
+    verify(replace, true, false, "disabled depth test");
+    replace.depthTest = true;
+    replace.depthCompare = VK_COMPARE_OP_ALWAYS;
+    verify(replace, true, false, "always passing depth test");
+    replace.depthCompare = VK_COMPARE_OP_LESS;
+    verify(replace, false, true, "possibly failing depth test");
+    replace.depthCompare = VK_COMPARE_OP_NEVER;
+    verify(replace, false, true, "always failing depth test");
+    replace.stencilBack.depthFailOp = VK_STENCIL_OP_KEEP;
+    replace.stencilBack.passOp = VK_STENCIL_OP_REPLACE;
+    verify(replace, true, false, "unreachable depth pass REPLACE");
+    replace = state;
+    replace.depthBoundsTest = true;
+    verify(replace, true, false, "bounds with reference-independent operations");
+    replace.stencilBack.depthFailOp = VK_STENCIL_OP_REPLACE;
+    Require(!StencilReferenceUnused(replace), "depth bounds admitted an unchecked REPLACE operation");
+    auto clear = state;
+    clear.stencilFront = {VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE, VK_COMPARE_OP_ALWAYS, 0xffu, 0xffu, 7u};
+    clear.stencilBack = clear.stencilFront;
+    verify(clear, false, true, "clear replacement state");
+    for (const bool front : {false, true}) {
+        auto invalid = state;
+        (front ? invalid.stencilFront : invalid.stencilBack).compareOp = static_cast<VkCompareOp>(8u);
+        Require(!StencilReferenceUnused(invalid), "an unknown stencil comparison lost its export");
+        invalid = state;
+        (front ? invalid.stencilFront : invalid.stencilBack).passOp = static_cast<VkStencilOp>(8u);
+        Require(!StencilReferenceUnused(invalid), "an unknown stencil operation lost its export");
+    }
+    auto invalidDepth = state;
+    invalidDepth.depthTest = true;
+    invalidDepth.depthCompare = static_cast<VkCompareOp>(8u);
+    Require(!StencilReferenceUnused(invalidDepth), "an unknown depth comparison lost its stencil export");
+    auto inactive = clear;
+    inactive.stencilTest = false;
+    Require(StencilReferenceUnused(inactive), "a disabled stencil test retained the export");
+    inactive.stencilTest = true;
+    inactive.depth.reset();
+    Require(StencilReferenceUnused(inactive), "an absent attachment retained the export");
+    std::cout << "Unused stencil reference sample equivalence passed: " << accepted << " accepted states, " << countermodels << " dependent countermodels\n";
+}
+
 std::set<std::string> bufferViews(std::span<const std::uint32_t> words) {
     std::set<std::string> views;
     for (std::size_t at = 5; at < words.size() && (words[at] >> 16u) != 0; at += words[at] >> 16u) {
@@ -6334,6 +6481,10 @@ int main(int argc, char** argv) {
     setenv("APS5_HEAP_MIRROR_MIB", "4", 1);
 #endif
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--unused-stencil-reference") {
+            stencilReferenceUnusedTests();
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--sparse-buffer-holes") {
             bool passed = false;
             {
@@ -6461,6 +6612,7 @@ int main(int argc, char** argv) {
         earlyFragmentTestsTests();
         orderedPixelShaderTests();
         stencilRefExportTests();
+        stencilReferenceUnusedTests();
         aliasedBufferViewTests();
         LineStripTests();
         ProvokingVertexTests();
