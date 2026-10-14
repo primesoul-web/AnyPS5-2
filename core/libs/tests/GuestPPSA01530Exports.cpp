@@ -6,7 +6,6 @@
 
 extern "C" {
 int APS5_VABI sceNetShowIfconfig();
-int APS5_VABI scePadUnknown_n3kSX62fgNo();
 }
 
 namespace {
@@ -18,7 +17,6 @@ struct Export {
 
 const Export exports[] = {
     {"sceNetShowIfconfig", sceNetShowIfconfig},
-    {"scePadUnknown_n3kSX62fgNo", scePadUnknown_n3kSX62fgNo},
 };
 
 bool ReportsNotImplemented(const Export& entry) {
