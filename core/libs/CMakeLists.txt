@@ -282,6 +282,7 @@ if(BUILD_TESTING)
     target_link_libraries(guest_offline_imports_tests PRIVATE libSceHttp libSceNpEntitlementAccess libSceRudp libc)
     configure_windows_unwind(guest_offline_imports_tests)
     add_test(NAME guest_offline_imports COMMAND guest_offline_imports_tests)
+    set_tests_properties(guest_offline_imports PROPERTIES ENVIRONMENT "APS5_HTTP_NETWORK=0")
     if(Python3_Interpreter_FOUND)
         add_test(NAME nid_shared_strings COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/nid/tests/test_shared_strings.py $<TARGET_FILE:nid_patcher>)

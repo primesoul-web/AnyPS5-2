@@ -78,6 +78,16 @@ The `--skip-sce-module`, `--exclude-sce-module <file>`, `--skip-syscall-check`, 
 
 `--trap-sdk-syscall-stubs` is also for debugging. It preserves a runtime failure if a syscall wrapper is called; it does not implement FreeBSD syscalls or make these applications generally safe to run.
 
+## HTTP networking
+
+Host networking is intended for forks. Upstream keeps the console offline and does not accept a host-backed `libSceHttp` on `main` ([decision](https://github.com/boykopovar/AnyPS5/issues/3844#issuecomment-6115108934)).
+
+On Windows, `APS5_HTTP_NETWORK=1` enables experimental host HTTP/HTTPS for `libSceHttp`. Set the environment variable before starting the title. An unset variable or `0` keeps the offline backend; `1` on Linux or macOS throws. `libSceHttp2` remains offline.
+
+The backend supports blocking requests, binary bodies, response headers and status, chunked responses, optional GZIP decoding, redirects, timeouts and cancellation. HTTPS uses Windows certificate trust and checks certificates by default. Disable automatic redirects before sending Authorization, Proxy-Authorization, Cookie or other sensitive custom headers; credential headers with automatic redirects throw.
+
+With the host backend enabled, certificate-loading calls, epoll calls, enabling nonblocking requests and registering a nonnull request-status callback throw. Titles that load custom certificates during initialization may stop before their first request. Automatic proxy configuration, cookies, authentication, other guest callbacks, explicit TLS versions and chunked uploads also throw when requested. Console behavior and title compatibility remain unverified; see [technical debt](../dev/debt/libSceHttp.md).
+
 ## Runtime layout
 
 For an executable that assumes its image starts at `0x400000`, use `relinker --windows --windows-fixed-base 0x400000 source/input.elf app.exe`. This maps its lowest ELF load page there; the PE headers occupy the preceding 64 KiB. Use this option only when the executable requires an exact address. Without it, the Windows executable has no `DYNAMIC_BASE` and loads at its preferred base `0x140000000`; relocations are kept, so Windows relocates it if that range is taken. Modules keep `DYNAMIC_BASE`. This option does not change macOS output.

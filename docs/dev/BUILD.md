@@ -190,3 +190,7 @@ ctest --test-dir build/register-context --output-on-failure
 ```
 
 On Linux x86-64, omit `CMAKE_OSX_ARCHITECTURES`; the full `BUILD_TESTING` build also registers these tests. Apple silicon runs the x86-64 tests through Rosetta. They cover the unwinder's register transfer, not the complete macOS runtime or guest exception handling.
+
+## HTTP network test
+
+Python 3 and the OpenSSL command-line tool are optional dependencies for the Windows `guest_http_network` test; CTest skips it if either is unavailable. OpenSSL is also searched for in the standard Git for Windows location. Each run generates a temporary localhost certificate and key; none is committed or installed in the certificate store. Certificate generation errors and test failures are not skipped.

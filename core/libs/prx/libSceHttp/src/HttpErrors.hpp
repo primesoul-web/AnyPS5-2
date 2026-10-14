@@ -8,6 +8,14 @@ inline constexpr int ERROR_ABORTED = static_cast<int>(0x80431080);
 inline constexpr int ERROR_INVALID_ID = static_cast<int>(0x80431100);
 inline constexpr int ERROR_INVALID_VALUE = static_cast<int>(0x804311FE);
 inline constexpr int ERROR_INVALID_URL = static_cast<int>(0x80433060);
+inline constexpr int ERROR_HTTP_BUSY = static_cast<int>(0x80431021);
+inline constexpr int ERROR_UNKNOWN_METHOD = static_cast<int>(0x8043106b);
+inline constexpr int ERROR_BEFORE_SEND = static_cast<int>(0x80431065);
+inline constexpr int ERROR_AFTER_SEND = static_cast<int>(0x80431066);
+inline constexpr int ERROR_HTTP_TIMEOUT = static_cast<int>(0x80431068);
+inline constexpr int ERROR_HTTP_HEADER_TOO_LARGE = static_cast<int>(0x80431073);
+inline constexpr int ERROR_HTTP_SSL = static_cast<int>(0x80431075);
+inline constexpr int ERROR_HTTP_ABORTED = static_cast<int>(0x80431080);
 inline constexpr int ERROR_PARSE_HTTP_INVALID_RESPONSE = static_cast<int>(0x80432060);
 inline constexpr int ERROR_PARSE_HTTP_INVALID_VALUE = static_cast<int>(0x804321FE);
 
