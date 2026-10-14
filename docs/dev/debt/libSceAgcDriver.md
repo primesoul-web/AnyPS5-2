@@ -1,5 +1,9 @@
 # libSceAgcDriver technical debt
 
+### Silent stubs
+
+- [sceAgcDriverRegisterDefaultOwner](../../../core/libs/prx/libSceAgcDriver/Unimplemented.cpp) (libSceAgcDriver) - takes one uint32 owner by value (OpenAGC `include/agcdriver.h`, SharpEmu `AgcExports.DriverResources.cs`) and returns 0 without recording it. PPSA21480 treats the code 0x8A6C9018 it returned before as fatal. Console behaviour is unverified: OpenAGC describes the function as a firmware 5.50 stub that returns 0x8A6C9018, SharpEmu returns 0
+
 ### Unknown function info
 
 - [Inactive vertex point size](../../../core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp) - `PA_CL_VS_OUT_CNTL.USE_VTX_POINT_SIZE` is accepted for lines, triangles and rectangles with `GS_EN` and `HS_EN` clear, when polygon mode is disabled or both faces are filled. Points, patches and absent routing or rasterization registers still throw. Bit 16 selects the misc export's X component as PointSize ([AMD CIK register reference](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf), PA_CL_VS_OUT_CNTL); ignoring it for non-point rasterization follows [Vulkan PointSize](https://docs.vulkan.org/refpages/latest/refpages/source/PointSize.html). This is inferred, not measured on console hardware. XashPS5 (PPSA19111 v1.3) sets `0x01210000` on a filled triangle draw.
