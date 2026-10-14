@@ -1,6 +1,8 @@
 #include "prx/libkernel/AppMetadata/include/ParamJsonParser.hpp"
 #include <chrono>
 #include <clocale>
+#include <cfenv>
+#include <locale>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -162,15 +164,49 @@ static void CheckNumberSyntax(const std::filesystem::path& path) {
     };
     for (const auto& [before, after] : fields) {
         for (const auto* text : {"0", "-0", "0.25", "-0.25", "0e3", "0E+3", "-0e-3",
-                                 "10", "-10", "1e3", "1.25", "1e01", "1e+003", "1e-003"}) {
+                                 "10", "-10", "1e3", "1.25", "1e01", "1e+003", "1e-003",
+                                 "1.7976931348623157e308", "1e-308", "5e-324", "-5e-324",
+                                 "2.2250738585072012e-308", "0e99999999999999", "0e-99999999999999"}) {
             const auto parsed = ParseText(path, prefix + before + text + after);
             Require(parsed.titleId == "PPSA00000" && parsed.title == "Example", "Title metadata changed");
         }
-        for (const auto* text : {"00", "01", "-00", "-01", "00.25", "01.25", "-01.25", "00e3", "01e3", "-01e3"}) {
+        for (const auto* text : {"00", "01", "-00", "-01", "00.25", "01.25", "-01.25", "00e3", "01e3", "-01e3",
+                                 "1e309", "-1e309", "1e-999", "-1e-999", "2e-324", "-2e-324"}) {
             bool rejected = false;
             try { ParseText(path, prefix + before + text + after); } catch (const std::exception&) { rejected = true; }
-            Require(rejected, std::string("Accepted leading-zero number: ") + text);
+            Require(rejected, std::string("Accepted invalid number: ") + text);
         }
+    }
+}
+
+static void CheckCppLocale(const std::filesystem::path& path) {
+    struct CommaDecimal final : std::numpunct<char> {
+        char do_decimal_point() const override { return ','; }
+    };
+    struct RestoreLocale {
+        std::locale previous;
+        ~RestoreLocale() { std::locale::global(previous); }
+    } restore;
+    std::locale::global(std::locale(std::locale::classic(), new CommaDecimal));
+    Require(ParseSize(path, "1.25e3").downloadDataSizeMiB == 1250, "JSON number depends on C++ locale");
+}
+
+static void CheckNumericEnvironment(const std::filesystem::path& path) {
+    struct RestoreEnvironment {
+        std::fenv_t previous;
+        RestoreEnvironment() { Require(std::feholdexcept(&previous) == 0, "Cannot save test floating environment"); }
+        ~RestoreEnvironment() { std::fesetenv(&previous); }
+    } restore;
+    for (const auto mode : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+        Require(std::fesetround(mode) == 0, "Cannot set test rounding mode");
+        std::feclearexcept(FE_ALL_EXCEPT);
+        std::feraiseexcept(FE_DIVBYZERO);
+        Require(ParseSize(path, "0.999999999999999999999").downloadDataSizeMiB == 1, "JSON number depends on rounding mode");
+        Require(std::fegetround() == mode && std::fetestexcept(FE_ALL_EXCEPT) == FE_DIVBYZERO, "JSON parsing changed floating environment");
+        bool rejected = false;
+        try { ParseSize(path, "1e309"); } catch (const std::exception&) { rejected = true; }
+        Require(rejected, "Overflow accepted under alternate rounding mode");
+        Require(std::fegetround() == mode && std::fetestexcept(FE_ALL_EXCEPT) == FE_DIVBYZERO, "JSON rejection changed floating environment");
     }
 }
 
@@ -202,6 +238,8 @@ int main() {
     int result = 0;
     try {
         CheckNumericLocale(path);
+        CheckCppLocale(path);
+        CheckNumericEnvironment(path);
         CheckUtf8(path);
         CheckFlexibleMemorySize(path);
         CheckNumberSyntax(path);

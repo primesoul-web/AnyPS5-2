@@ -37,3 +37,12 @@
 [submodule "3rdparty/libusb-cmake"]
 	path = 3rdparty/libusb-cmake
 	url = https://github.com/libusb/libusb-cmake.git
+[submodule "3rdparty/capstone"]
+	path = 3rdparty/capstone
+	url = https://github.com/capstone-engine/capstone.git
+[submodule "3rdparty/pyelftools"]
+	path = 3rdparty/pyelftools
+	url = https://github.com/eliben/pyelftools.git
+[submodule "3rdparty/ps5link-sdk"]
+	path = 3rdparty/ps5link-sdk
+	url = https://github.com/Rufidj/ps5link-sdk.git
