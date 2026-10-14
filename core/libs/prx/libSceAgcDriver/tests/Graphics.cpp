@@ -5082,6 +5082,7 @@ void orderedPixelShaderTests() {
     const auto unorderedKills = countOps(ShaderRecompiler::Recompile(unordered).spirv.Words());
     Require(!unorderedKills.contains(spv::OpTerminateInvocation) && unorderedKills.at(spv::OpKill) == 6u, "a pixel shader with BDA reads and no SPV_KHR_terminate_invocation did not kill on a fault");
     constexpr std::array<std::uint32_t, 12> vertexBdaCode{0x7e040f00u, 0x7e060280u, 0xdc208001u, 0x047d0002u, 0xdc308008u, 0x057d0002u, 0xbf8c3f70u, 0x4a080b04u, 0x7e0e0d04u, 0xf80008cfu, 0x07070707u, 0xbf810000u};
+    const std::array<std::uint32_t, 5> vertexCapabilities{spv::CapabilityShader, spv::CapabilityInt64, spv::CapabilityPhysicalStorageBufferAddresses, spv::CapabilityStorageBuffer8BitAccess, spv::CapabilityClipDistance};
     const auto vertexWords = [&](std::span<const std::string_view> extensions) {
         ShaderRecompiler::RecompileRequest request{};
         request.shader = {ShaderRecompiler::ShaderStage::Vertex, 0x10000u, vertexBdaCode, 0, {}};
@@ -5090,7 +5091,7 @@ void orderedPixelShaderTests() {
         request.target.vulkanVersion = 0x00401000u;
         request.target.spirvVersion = 0x00010300u;
         request.target.subgroupSize = 64;
-        request.target.supportedCapabilities = bdaCapabilities;
+        request.target.supportedCapabilities = vertexCapabilities;
         request.target.supportedExtensions = extensions;
         request.target.bdaAbiVersion = ShaderRecompiler::BdaAbi::Version;
         request.layout.pushConstantSizeBytes = 128;
